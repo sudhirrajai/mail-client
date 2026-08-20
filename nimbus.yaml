@@ -14,6 +14,19 @@ install:
 # Commands to run during the build phase
 build:
   - npm run build
+  - cd backend && test -f .env || cp .env.example .env
+  - cd backend && php artisan key:generate --force
+  - cd backend && sed -i 's/DB_CONNECTION=.*/DB_CONNECTION=mysql/' .env
+  - cd backend && sed -i 's/# DB_HOST=.*/DB_HOST=127.0.0.1/' .env
+  - cd backend && sed -i 's/# DB_PORT=.*/DB_PORT=3306/' .env
+  - cd backend && sed -i 's/# DB_DATABASE=.*/DB_DATABASE=webmail/' .env
+  - cd backend && sed -i 's/# DB_USERNAME=.*/DB_USERNAME=webmail_user/' .env
+  - cd backend && sed -i 's/# DB_PASSWORD=.*/DB_PASSWORD=09D6gnu540BA/' .env
+  - cd backend && sed -i 's/DB_HOST=.*/DB_HOST=127.0.0.1/' .env
+  - cd backend && sed -i 's/DB_PORT=.*/DB_PORT=3306/' .env
+  - cd backend && sed -i 's/DB_DATABASE=.*/DB_DATABASE=webmail/' .env
+  - cd backend && sed -i 's/DB_USERNAME=.*/DB_USERNAME=webmail_user/' .env
+  - cd backend && sed -i 's/DB_PASSWORD=.*/DB_PASSWORD=09D6gnu540BA/' .env
   - cd backend && php artisan migrate --force
   - cd backend && php artisan config:cache
   - cd backend && php artisan route:cache
