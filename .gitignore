@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+backend/vendor/
+
+# Next.js build output
+.next/
+out/
+build/
+
+# Environment files
+.env
+.env*.local
+backend/.env
+
+# SQLite Database & Storage
+backend/database/database.sqlite
+backend/storage/*.key
+backend/storage/logs/
+backend/storage/framework/cache/
+backend/storage/framework/sessions/
+backend/storage/framework/views/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# v0 sandbox internal files
+__v0_runtime_loader.js
+__v0_devtools.tsx
+__v0_jsx-dev-runtime.ts
+.snowflake/
+.v0-trash/
+.vercel/
