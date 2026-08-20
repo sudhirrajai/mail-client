@@ -38,15 +38,19 @@ nginx:
   php_version: 8.3
 
 # Supervisor process configuration for Next.js app
+# Uses dedicated PORT 3002 to avoid conflicts with other Node/Next apps on port 3000
 supervisor:
   program: nextjs_webmail
   config: |
     [program:nextjs_webmail]
-    command=npm run start
+    process_name=%(program_name)s_%(process_num)02d
+    command=npm run start -- -p 3002
     directory={domainPath}
     autostart=true
     autorestart=true
     user=www-data
     numprocs=1
+    environment=PORT="3002"
     redirect_stderr=true
     stdout_logfile={domainPath}/backend/storage/logs/nextjs.log
+    stopwaitsecs=3600
