@@ -1,0 +1,44 @@
+version: 1
+
+# Required runtimes
+runtime:
+  php: 8.3
+  node: 20
+
+# Commands to run during the installation phase
+# Next.js dependencies in root, Laravel dependencies in backend/
+install:
+  - npm install
+  - cd backend && composer install --no-dev --optimize-autoloader
+
+# Commands to run during the build phase
+build:
+  - npm run build
+  - cd backend && php artisan migrate --force
+  - cd backend && php artisan config:cache
+  - cd backend && php artisan route:cache
+
+# Environment variables to be set/updated
+env:
+  APP_ENV: production
+  APP_DEBUG: "false"
+
+# Nginx configuration overrides
+# Point Nginx root to Laravel's public directory
+nginx:
+  root: backend/public
+  php_version: 8.3
+
+# Supervisor process configuration for Next.js app
+supervisor:
+  program: nextjs_webmail
+  config: |
+    [program:nextjs_webmail]
+    command=npm run start
+    directory={domainPath}
+    autostart=true
+    autorestart=true
+    user=www-data
+    numprocs=1
+    redirect_stderr=true
+    stdout_logfile={domainPath}/backend/storage/logs/nextjs.log
