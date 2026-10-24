@@ -39,6 +39,8 @@ interface RichTextEditorProps {
   onAttachmentsChange?: (attachments: AttachmentItem[]) => void
   placeholder?: string
   minHeight?: string
+  maxHeight?: string
+  className?: string
 }
 
 export function RichTextEditor({
@@ -47,6 +49,8 @@ export function RichTextEditor({
   onAttachmentsChange,
   placeholder = 'Write your message...',
   minHeight = '220px',
+  maxHeight,
+  className,
 }: RichTextEditorProps) {
   const editorRef = useRef<HTMLDivElement>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
@@ -234,9 +238,9 @@ export function RichTextEditor({
   }
 
   return (
-    <div className="flex flex-col rounded-xl border border-border/80 bg-card overflow-hidden transition focus-within:border-primary">
+    <div className={cn('flex flex-col rounded-xl border border-border/80 bg-card overflow-hidden transition focus-within:border-primary', className)}>
       {/* Formatting Toolbar */}
-      <div className="flex flex-wrap items-center gap-1 border-b border-border/70 bg-muted/40 p-1.5">
+      <div className="shrink-0 flex flex-wrap items-center gap-1 border-b border-border/70 bg-muted/40 p-1.5">
         <button
           type="button"
           onClick={() => exec('bold')}
@@ -373,7 +377,10 @@ export function RichTextEditor({
       </div>
 
       {/* Contenteditable Rich Area */}
-      <div className="relative p-4 overflow-y-auto" style={{ minHeight }}>
+      <div
+        className="relative flex-1 min-h-0 p-4 overflow-y-auto"
+        style={{ minHeight, maxHeight }}
+      >
         <div
           ref={editorRef}
           contentEditable
@@ -382,7 +389,7 @@ export function RichTextEditor({
           onDrop={handleDrop}
           onFocus={() => setIsFocused(true)}
           onBlur={() => setIsFocused(false)}
-          className="outline-none min-h-[160px] prose prose-sm max-w-none dark:prose-invert text-foreground"
+          className="outline-none min-h-[140px] prose prose-sm max-w-none dark:prose-invert text-foreground"
         />
 
         {(!value || value === '<br>') && !isFocused && (
@@ -394,7 +401,7 @@ export function RichTextEditor({
 
       {/* Attachments Tray */}
       {attachments.length > 0 && (
-        <div className="border-t border-border/60 bg-muted/20 p-3">
+        <div className="shrink-0 max-h-36 overflow-y-auto border-t border-border/60 bg-muted/20 p-3">
           <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">
             Attached Files & Images ({attachments.length})
           </p>

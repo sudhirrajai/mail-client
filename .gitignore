@@ -6,6 +6,7 @@ backend/vendor/
 .next/
 out/
 build/
+*.tsbuildinfo
 
 # Environment files
 .env

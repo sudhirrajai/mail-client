@@ -959,12 +959,56 @@ export default function Page() {
                         {latest.sender_name || latest.sender_email}
                       </span>
                       {thread.count > 1 && (
-                        <span className="rounded-md bg-muted px-1.5 py-0.2 text-[10px] font-bold text-muted-foreground">
+                        <span className="rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-bold text-muted-foreground">
                           {thread.count}
                         </span>
                       )}
                       {thread.unread && <span className="size-1.5 shrink-0 rounded-full bg-primary" />}
-                      <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">{latest.time}</span>
+                      {thread.starred && (
+                        <Star className="size-3.5 shrink-0 fill-amber-400 text-amber-400 group-hover:hidden" />
+                      )}
+                      <span className="ml-auto shrink-0 text-[11px] text-muted-foreground group-hover:hidden">
+                        {latest.time}
+                      </span>
+                      <div className="ml-auto hidden shrink-0 items-center gap-0.5 rounded-lg bg-background/90 px-1 py-0.5 shadow-sm backdrop-blur-sm border border-border/40 group-hover:flex">
+                        {folder !== 'Inbox' && (
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              thread.emails.forEach((e) => handleMoveToInbox(e.id))
+                            }}
+                            title="Move Thread to Inbox"
+                            className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-primary transition"
+                          >
+                            <Inbox className="size-3.5" />
+                          </button>
+                        )}
+                        {folder !== 'Archive' && (
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              thread.emails.forEach((e) => handleArchiveEmail(e.id))
+                            }}
+                            title="Archive Thread"
+                            className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition"
+                          >
+                            <Archive className="size-3.5" />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            toggleStar(latest.id)
+                          }}
+                          title="Star Thread"
+                          className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-amber-500 transition"
+                        >
+                          <Star className={cn('size-3.5', thread.starred && 'fill-amber-400 text-amber-400')} />
+                        </button>
+                      </div>
                     </div>
                     <p className={cn('truncate text-sm', thread.unread ? 'font-semibold text-foreground' : 'text-muted-foreground')}>
                       {thread.subject}
@@ -978,42 +1022,6 @@ export default function Page() {
                       ))}
                       {latest.attachment && <Paperclip className="ml-1 size-3 text-muted-foreground" />}
                     </div>
-                  </div>
-                  <div className="absolute right-2 top-8 hidden items-center gap-1 rounded-md p-1 group-hover:flex">
-                    {folder !== 'Inbox' && (
-                      <button
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          thread.emails.forEach((e) => handleMoveToInbox(e.id))
-                        }}
-                        title="Move Thread to Inbox"
-                        className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-primary"
-                      >
-                        <Inbox className="size-3.5" />
-                      </button>
-                    )}
-                    {folder !== 'Archive' && (
-                      <button
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          thread.emails.forEach((e) => handleArchiveEmail(e.id))
-                        }}
-                        title="Archive Thread"
-                        className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-                      >
-                        <Archive className="size-3.5" />
-                      </button>
-                    )}
-                    <button
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        toggleStar(latest.id)
-                      }}
-                      title="Star Thread"
-                      className="rounded-md p-1 text-muted-foreground hover:text-amber-500"
-                    >
-                      <Star className={cn('size-3.5', thread.starred && 'fill-amber-400 text-amber-400')} />
-                    </button>
                   </div>
                 </div>
               )
@@ -1152,6 +1160,7 @@ export default function Page() {
                     onChange={setReply}
                     placeholder={`Reply in conversation thread: "${selectedThread.subject}"... (Shortcut: R)`}
                     minHeight="140px"
+                    maxHeight="320px"
                   />
                   <div className="mt-3 flex justify-end">
                     <button
@@ -1185,9 +1194,9 @@ export default function Page() {
 
       {/* Compose Email Modal */}
       {composeOpen && (
-        <div className="fixed bottom-0 right-4 z-20 w-[min(560px,calc(100vw-2rem))] overflow-hidden rounded-t-2xl border border-border bg-card shadow-2xl">
-          <form onSubmit={handleSendEmail}>
-            <header className="flex items-center gap-3 border-b border-border/70 bg-muted/30 px-4 py-3">
+        <div className="fixed bottom-0 right-4 z-20 flex h-[min(620px,calc(100vh-2rem))] w-[min(580px,calc(100vw-2rem))] flex-col overflow-hidden rounded-t-2xl border border-border bg-card shadow-2xl">
+          <form onSubmit={handleSendEmail} className="flex min-h-0 flex-1 flex-col">
+            <header className="flex shrink-0 items-center gap-3 border-b border-border/70 bg-muted/30 px-4 py-3">
               <span className="text-sm font-semibold">New message</span>
               <div className="ml-auto flex items-center gap-1">
                 <IconButton label="Close" onClick={() => setComposeOpen(false)}>
@@ -1195,7 +1204,7 @@ export default function Page() {
                 </IconButton>
               </div>
             </header>
-            <div className="flex flex-col">
+            <div className="flex shrink-0 flex-col">
               <div className="flex items-center border-b border-border/70 px-4">
                 <span className="w-12 text-xs text-muted-foreground">To</span>
                 <input
@@ -1203,7 +1212,7 @@ export default function Page() {
                   required
                   value={composeTo}
                   onChange={(e) => setComposeTo(e.target.value)}
-                  className="h-11 flex-1 bg-transparent text-sm outline-none"
+                  className="h-10 flex-1 bg-transparent text-sm outline-none"
                   placeholder="recipient@domain.com"
                 />
               </div>
@@ -1213,7 +1222,7 @@ export default function Page() {
                   type="email"
                   value={composeCc}
                   onChange={(e) => setComposeCc(e.target.value)}
-                  className="h-11 flex-1 bg-transparent text-sm outline-none"
+                  className="h-10 flex-1 bg-transparent text-sm outline-none"
                   placeholder="cc@domain.com (optional)"
                 />
               </div>
@@ -1222,42 +1231,43 @@ export default function Page() {
                 required
                 value={composeSubject}
                 onChange={(e) => setComposeSubject(e.target.value)}
-                className="h-11 border-b border-border/70 bg-transparent px-4 text-sm outline-none placeholder:text-muted-foreground"
+                className="h-10 border-b border-border/70 bg-transparent px-4 text-sm outline-none placeholder:text-muted-foreground"
                 placeholder="Subject"
               />
-              <div className="p-3">
-                <RichTextEditor
-                  value={composeBody}
-                  onChange={setComposeBody}
-                  onAttachmentsChange={setComposeAttachments}
-                  placeholder="Write your message..."
-                  minHeight="220px"
-                />
-              </div>
-              <footer className="flex items-center gap-1 border-t border-border/70 px-4 py-3">
-                <button
-                  type="submit"
-                  disabled={sending}
-                  className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50"
-                >
-                  {sending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-                  Send
-                </button>
-                <IconButton label="Attach file" onClick={() => composeFileInputRef.current?.click()}>
-                  <Paperclip />
-                </IconButton>
-                <input
-                  ref={composeFileInputRef}
-                  type="file"
-                  multiple
-                  className="hidden"
-                  onChange={handleComposeFileSelect}
-                />
-                <IconButton label="Discard draft" onClick={() => setComposeOpen(false)}>
-                  <Trash2 />
-                </IconButton>
-              </footer>
             </div>
+            <div className="flex min-h-0 flex-1 flex-col p-3">
+              <RichTextEditor
+                value={composeBody}
+                onChange={setComposeBody}
+                onAttachmentsChange={setComposeAttachments}
+                placeholder="Write your message..."
+                minHeight="140px"
+                className="h-full flex-1 min-h-0"
+              />
+            </div>
+            <footer className="flex shrink-0 items-center gap-1 border-t border-border/70 px-4 py-3">
+              <button
+                type="submit"
+                disabled={sending}
+                className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50"
+              >
+                {sending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+                Send
+              </button>
+              <IconButton label="Attach file" onClick={() => composeFileInputRef.current?.click()}>
+                <Paperclip />
+              </IconButton>
+              <input
+                ref={composeFileInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                onChange={handleComposeFileSelect}
+              />
+              <IconButton label="Discard draft" onClick={() => setComposeOpen(false)}>
+                <Trash2 />
+              </IconButton>
+            </footer>
           </form>
         </div>
       )}

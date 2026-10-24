@@ -22,7 +22,7 @@ class MailEventBus {
 
   on<K extends MailEventType>(event: K, callback: EventCallback<K>): () => void {
     if (!this.listeners[event]) {
-      this.listeners[event] = new Set()
+      this.listeners[event] = new Set() as any
     }
     ;(this.listeners[event] as Set<EventCallback<K>>).add(callback)
 
