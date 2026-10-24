@@ -543,12 +543,18 @@ export default function Page() {
 
   const selectThread = async (thread: EmailThread) => {
     setSelectedThreadKey(thread.threadKey)
-    // Mark unread emails in thread as read
+    // Mark unread emails in thread as read and ensure full content is loaded
     thread.emails.forEach(async (email) => {
+      const needsFullLoad = !email.body_html || email.unread
       if (email.unread) {
         mailEventBus.emit('EMAIL_READ_TOGGLED', { emailId: email.id, unread: false })
+      }
+      if (needsFullLoad) {
         try {
-          await api.getEmail(email.id)
+          const res = await api.getEmail(email.id)
+          if (res?.email) {
+            setEmails((current) => current.map((e) => (e.id === email.id ? { ...e, ...res.email } : e)))
+          }
         } catch (e) {}
       }
     })
@@ -631,9 +637,11 @@ export default function Page() {
       setComposeAttachments([])
 
       if (res.email) {
+        setEmails((current) => [res.email!, ...current.filter((e) => e.id !== res.email!.id)])
+        emailCache.clear()
         mailEventBus.emit('EMAIL_SENT', { email: res.email })
       }
-      handleSync(false, false, folder, accountId)
+      handleSync(false, true, folder, accountId)
     } catch (err: any) {
       showError('Failed to Send Email', err.message || 'Error occurred while connecting to SMTP server.')
     } finally {
@@ -1108,12 +1116,25 @@ export default function Page() {
                       </div>
                       <div className="min-w-0 flex-1">
                         <div className="flex items-start justify-between gap-4">
-                          <div>
-                            <p className="text-sm font-semibold">
-                              {msg.sender_name || msg.sender_email}{' '}
-                              <span className="font-normal text-muted-foreground text-xs">&lt;{msg.sender_email}&gt;</span>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-semibold truncate">
+                              {msg.sender_name || msg.sender_email || 'Sender'}{' '}
+                              {msg.sender_email && (
+                                <span className="font-normal text-muted-foreground text-xs">&lt;{msg.sender_email}&gt;</span>
+                              )}
                             </p>
-                            <p className="mt-0.5 text-xs text-muted-foreground">To: {msg.recipient_to} · {msg.time}</p>
+                            <div className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
+                              <span>
+                                <span className="font-medium text-foreground/80">To:</span> {msg.recipient_to || 'Undisclosed recipient'}
+                              </span>
+                              {msg.recipient_cc && (
+                                <span>
+                                  <span className="font-medium text-foreground/80">Cc:</span> {msg.recipient_cc}
+                                </span>
+                              )}
+                              <span>·</span>
+                              <span>{msg.time}</span>
+                            </div>
                           </div>
                           <div className="flex items-center gap-1">
                             <button onClick={() => toggleStar(msg.id)} className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted">

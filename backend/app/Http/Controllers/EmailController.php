@@ -85,27 +85,13 @@ class EmailController extends Controller
 
         $emails = $query->select([
             'id', 'email_account_id', 'sender_name', 'sender_email',
-            'initials', 'color', 'subject', 'preview', 'date_sent',
+            'recipient_to', 'recipient_cc', 'recipient_bcc',
+            'initials', 'color', 'subject', 'preview', 'body_html', 'body_text', 'date_sent',
             'folder', 'unread', 'starred', 'tags', 'attachment'
         ])->orderBy('date_sent', 'desc')->orderBy('id', 'desc')->get();
 
         $formattedEmails = $emails->map(function ($email) {
-            return [
-                'id' => $email->id,
-                'email_account_id' => $email->email_account_id,
-                'sender' => $email->sender_name ?: $email->sender_email,
-                'email' => $email->sender_email,
-                'initials' => $email->initials,
-                'color' => $email->color,
-                'subject' => $email->subject,
-                'preview' => $email->preview,
-                'time' => $email->date_sent ? Carbon::parse($email->date_sent)->diffForHumans() : 'Just now',
-                'folder' => $email->folder,
-                'unread' => (bool) $email->unread,
-                'starred' => (bool) $email->starred,
-                'tags' => $email->tags ?? [],
-                'attachment' => $email->attachment,
-            ];
+            return $this->formatEmail($email);
         });
 
         $unreadCount = Email::whereIn('email_account_id', $accountIds)
@@ -131,24 +117,7 @@ class EmailController extends Controller
         }
 
         return response()->json([
-            'email' => [
-                'id' => $email->id,
-                'email_account_id' => $email->email_account_id,
-                'sender' => $email->sender_name ?: $email->sender_email,
-                'email' => $email->sender_email,
-                'initials' => $email->initials,
-                'color' => $email->color,
-                'subject' => $email->subject,
-                'preview' => $email->preview,
-                'time' => $email->date_sent ? Carbon::parse($email->date_sent)->format('M d, Y h:i A') : 'Just now',
-                'folder' => $email->folder,
-                'unread' => (bool) $email->unread,
-                'starred' => (bool) $email->starred,
-                'tags' => $email->tags ?? [],
-                'attachment' => $email->attachment,
-                'body_html' => $email->body_html,
-                'body_text' => $email->body_text,
-            ],
+            'email' => $this->formatEmail($email),
         ]);
     }
 
@@ -304,12 +273,40 @@ class EmailController extends Controller
             return response()->json([
                 'success' => true,
                 'message' => 'Email sent successfully via SMTP!',
-                'email' => $createdEmail,
+                'email' => $this->formatEmail($createdEmail),
             ]);
         } catch (Exception $e) {
             return response()->json([
                 'message' => $e->getMessage()
             ], 500);
         }
+    }
+
+    private function formatEmail(Email $email): array
+    {
+        return [
+            'id' => $email->id,
+            'email_account_id' => $email->email_account_id,
+            'sender' => $email->sender_name ?: $email->sender_email,
+            'sender_name' => $email->sender_name ?: $email->sender_email,
+            'sender_email' => $email->sender_email,
+            'email' => $email->sender_email,
+            'recipient_to' => $email->recipient_to,
+            'recipient_cc' => $email->recipient_cc,
+            'recipient_bcc' => $email->recipient_bcc,
+            'initials' => $email->initials ?: 'ME',
+            'color' => $email->color ?: 'bg-indigo-600',
+            'subject' => $email->subject,
+            'preview' => $email->preview,
+            'body_html' => $email->body_html,
+            'body_text' => $email->body_text,
+            'date_sent' => $email->date_sent ? Carbon::parse($email->date_sent)->toISOString() : now()->toISOString(),
+            'time' => $email->date_sent ? Carbon::parse($email->date_sent)->diffForHumans() : 'Just now',
+            'folder' => $email->folder,
+            'unread' => (bool) $email->unread,
+            'starred' => (bool) $email->starred,
+            'tags' => $email->tags ?? [],
+            'attachment' => $email->attachment,
+        ];
     }
 }
