@@ -131,15 +131,20 @@ class ImapSyncService
         // Strip IMAP socket protocol headers
         $text = preg_replace('/^\*\s*\d+\s*FETCH\s*\([^\r\n]*\r?\n/i', '', $text);
         $text = preg_replace('/BODY\[HEADER\.FIELDS[^\r\n]*\r?\n/i', '', $text);
-        $text = preg_replace('/BODY\[TEXT\][^\r\n]*\r?\n/i', '', $text);
-        $text = preg_replace('/A00F\d+\s+OK\s+Fetch\s+completed[^\r\n]*/i', '', $text);
+        $text = preg_replace('/BODY\[TEXT\](?:\s*\{\d+\})?\r?\n/i', '', $text);
+        $text = preg_replace('/A00F\d+\s+OK[^\r\n]*/i', '', $text);
+        $text = preg_replace('/\r?\n\)\s*$/', '', $text);
+
+        // Strip any residual RFC headers accidentally placed in the body
+        $text = preg_replace('/^(?:(?:To|From|Subject|Date|Message-ID|MIME-Version|Content-Type|Content-Transfer-Encoding|X-[a-zA-Z0-9-]+):[^\r\n]*\r?\n)+(\r?\n)?/i', '', $text);
+
         return trim($text);
     }
 
     /**
      * Extract full HTML and Plain text body from MIME multipart or singlepart text
      */
-    private function parseMimeBody(string $rawBody): array
+    private function parseMimeBody(string $rawBody, string $headers = ''): array
     {
         $rawBody = $this->cleanProtocolNoise($rawBody);
         $htmlBody = '';
@@ -153,19 +158,30 @@ class ImapSyncService
         }
 
         $attachments = [];
-        // Extract boundary if multipart
-        if (preg_match('/boundary="?([^"\r\n]+)"?/i', $rawBody, $bMatches)) {
-            $boundary = $bMatches[1];
+        $boundary = null;
+
+        // Try extracting boundary from headers or rawBody
+        $searchSource = $headers . "\n" . $rawBody;
+        if (preg_match('/boundary="?([^"\r\n;]+)"?/i', $searchSource, $bMatches)) {
+            $boundary = trim($bMatches[1]);
+        } elseif (preg_match('/^--([a-zA-Z0-9_\-\.+=]{8,})\r?$/m', $rawBody, $bMatches)) {
+            $boundary = trim($bMatches[1]);
+        }
+
+        if ($boundary) {
             $parts = explode('--' . $boundary, $rawBody);
 
             foreach ($parts as $part) {
+                $trimmedPart = trim($part);
+                if (empty($trimmedPart) || $trimmedPart === '--') continue;
+
                 if (preg_match('/Content-Disposition:\s*attachment/i', $part) || preg_match('/filename="?([^";\r\n]+)"?/i', $part, $fnMatch)) {
                     $filename = isset($fnMatch[1]) ? trim($fnMatch[1]) : 'attachment';
                     $type = 'pdf';
                     if (preg_match('/\.(jpg|jpeg|png|gif|webp|svg)$/i', $filename)) $type = 'image';
                     elseif (preg_match('/\.(zip|rar|tar|gz|7z)$/i', $filename)) $type = 'zip';
 
-                    $bodyContent = preg_replace('/^[\s\S]*?\r\n\r\n/', '', $part);
+                    $bodyContent = preg_replace('/^[\s\S]*?(?:\r?\n\r?\n)/', '', $part);
                     $bodyContent = trim(preg_replace('/--[\s\S]*$/', '', $bodyContent));
                     $sizeBytes = strlen($bodyContent);
                     $size = $sizeBytes < 1024 ? $sizeBytes . ' B' : ($sizeBytes < 1048576 ? round($sizeBytes / 1024, 1) . ' KB' : round($sizeBytes / 1048576, 1) . ' MB');
@@ -177,7 +193,7 @@ class ImapSyncService
                         'content_base64' => preg_match('/Content-Transfer-Encoding:\s*base64/i', $part) ? $bodyContent : base64_encode($bodyContent),
                     ];
                 } elseif (preg_match('/Content-Type:\s*text\/html/i', $part)) {
-                    $bodyContent = preg_replace('/^[\s\S]*?\r\n\r\n/', '', $part);
+                    $bodyContent = preg_replace('/^[\s\S]*?(?:\r?\n\r?\n)/', '', $part);
                     if (preg_match('/Content-Transfer-Encoding:\s*base64/i', $part)) {
                         $bodyContent = base64_decode(trim($bodyContent));
                     } elseif (preg_match('/Content-Transfer-Encoding:\s*quoted-printable/i', $part)) {
@@ -185,7 +201,7 @@ class ImapSyncService
                     }
                     $htmlBody = trim($bodyContent);
                 } elseif (preg_match('/Content-Type:\s*text\/plain/i', $part)) {
-                    $bodyContent = preg_replace('/^[\s\S]*?\r\n\r\n/', '', $part);
+                    $bodyContent = preg_replace('/^[\s\S]*?(?:\r?\n\r?\n)/', '', $part);
                     if (preg_match('/Content-Transfer-Encoding:\s*base64/i', $part)) {
                         $bodyContent = base64_decode(trim($bodyContent));
                     } elseif (preg_match('/Content-Transfer-Encoding:\s*quoted-printable/i', $part)) {
@@ -200,7 +216,8 @@ class ImapSyncService
             if (preg_match('/<html[\s\S]*<\/html>/i', $decoded, $hMatch)) {
                 $htmlBody = $hMatch[0];
             } else {
-                $textBody = strip_tags($decoded);
+                $cleanedText = preg_replace('/^(?:(?:To|From|Subject|Date|Message-ID|MIME-Version|Content-Type|Content-Transfer-Encoding|X-[a-zA-Z0-9-]+):[^\r\n]*\r?\n)+(\r?\n)?/i', '', $decoded);
+                $textBody = strip_tags(trim($cleanedText));
                 $htmlBody = "<p>" . nl2br(e($textBody)) . "</p>";
             }
         }
@@ -465,7 +482,7 @@ class ImapSyncService
 
                             for ($msgNum = $end; $msgNum >= $start; $msgNum--) {
                                 $fetchTag = 'A00F' . $msgNum;
-                                fputs($stream, "$fetchTag FETCH $msgNum (BODY[HEADER.FIELDS (FROM TO SUBJECT DATE)] BODY[TEXT])\r\n");
+                                fputs($stream, "$fetchTag FETCH $msgNum (BODY[HEADER.FIELDS (FROM TO SUBJECT DATE CONTENT-TYPE)] BODY[TEXT])\r\n");
 
                                 $rawMsgData = '';
                                 while ($line = fgets($stream, 4096)) {
@@ -476,16 +493,32 @@ class ImapSyncService
                                 $rawFrom = '';
                                 $subject = '(No Subject)';
                                 $dateStr = now();
+                                $rawHeaders = '';
+                                $rawBodyData = $rawMsgData;
 
-                                if (preg_match('/From:\s*(.*?)\r\n/i', $rawMsgData, $m)) {
+                                if (preg_match('/BODY\[HEADER\.FIELDS[^\r\n]*\r?\n([\s\S]*?)(?=\r?\n\s*\)?\s*BODY\[TEXT\]|\r?\n\r?\n)/i', $rawMsgData, $hm)) {
+                                    $rawHeaders = $hm[1];
+                                } else {
+                                    $rawHeaders = $rawMsgData;
+                                }
+
+                                if (preg_match('/BODY\[TEXT\](?:\s*\{\d+\})?\r?\n([\s\S]*)/i', $rawMsgData, $bm)) {
+                                    $rawBodyData = $bm[1];
+                                }
+
+                                // Strip trailing IMAP fetch completion tag and brackets
+                                $rawBodyData = preg_replace('/\r?\n\)\s*\r?\n' . preg_quote($fetchTag, '/') . '[\s\S]*$/', '', $rawBodyData);
+                                $rawBodyData = preg_replace('/\r?\n\)\s*$/', '', $rawBodyData);
+
+                                if (preg_match('/From:\s*(.*?)\r?\n/i', $rawHeaders, $m)) {
                                     $rawFrom = trim($m[1]);
                                 }
 
-                                if (preg_match('/Subject:\s*(.*?)\r\n/i', $rawMsgData, $m)) {
+                                if (preg_match('/Subject:\s*(.*?)\r?\n/i', $rawHeaders, $m)) {
                                     $subject = $this->decodeMimeHeader(trim($m[1]));
                                 }
 
-                                if (preg_match('/Date:\s*(.*?)\r\n/i', $rawMsgData, $m)) {
+                                if (preg_match('/Date:\s*(.*?)\r?\n/i', $rawHeaders, $m)) {
                                     try {
                                         $dateStr = Carbon::parse(trim($m[1]));
                                     } catch (Exception $e) {
@@ -496,7 +529,7 @@ class ImapSyncService
                                 [$from, $senderEmail] = $this->cleanSender($rawFrom ?: $username, $username);
                                 $initials = strtoupper(substr($from ?: 'EM', 0, 2));
 
-                                $parsedBody = $this->parseMimeBody($rawMsgData);
+                                $parsedBody = $this->parseMimeBody($rawBodyData, $rawHeaders);
                                 $bodyHtml = $parsedBody['html'];
                                 $bodyText = $parsedBody['text'];
                                 $attachment = $parsedBody['attachment'] ?? null;
