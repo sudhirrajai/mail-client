@@ -1,9 +1,10 @@
 'use client'
 
 import { useState } from 'react'
-import { X, User as UserIcon, Lock, KeyRound, Loader2, Check, ShieldCheck, Mail } from 'lucide-react'
+import { X, User as UserIcon, Lock, KeyRound, Loader2, Check, ShieldCheck, Mail, Bell, Volume2 } from 'lucide-react'
 import { api, User } from '@/lib/api'
 import { useToast } from '@/components/toast'
+import { notificationManager } from '@/lib/notification-manager'
 
 interface ProfileModalProps {
   isOpen: boolean
@@ -145,6 +146,37 @@ export function ProfileModal({ isOpen, onClose, user, onUserUpdate }: ProfileMod
               className="h-10 w-full rounded-xl border border-border/60 bg-muted/40 px-3.5 text-sm text-muted-foreground cursor-not-allowed"
             />
             <p className="text-[11px] text-muted-foreground">Login email address managed by your administrator.</p>
+          </div>
+
+          {/* Alerts & Sound Chime Testing */}
+          <div className="rounded-xl border border-border/60 bg-muted/20 p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Bell className="size-4 text-primary" />
+                <div>
+                  <p className="text-xs font-semibold text-foreground">Alerts & Sound Chime</p>
+                  <p className="text-[10px] text-muted-foreground">Audio chime and desktop/mobile alerts on incoming mail</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={async () => {
+                  notificationManager.playChime()
+                  const granted = await notificationManager.requestPermission()
+                  if (granted) {
+                    notificationManager.showOsNotification(
+                      'Mosaic Mail Notification',
+                      'Audio chime and instant alerts are active and working!',
+                      Date.now()
+                    )
+                  }
+                  showSuccess('Sound Tested', 'Audio chime played and notification alert triggered.')
+                }}
+                className="flex items-center gap-1.5 rounded-lg border border-border/80 bg-background px-2.5 py-1 text-[11px] font-semibold text-foreground hover:bg-muted transition cursor-pointer shadow-xs"
+              >
+                <Volume2 className="size-3 text-primary" /> Test Alert
+              </button>
+            </div>
           </div>
 
           {/* Change Password Toggle */}

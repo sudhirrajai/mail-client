@@ -45,6 +45,8 @@ import { EmailListSkeleton, EmailReaderSkeleton } from '@/components/email-skele
 import { RichTextEditor } from '@/components/rich-text-editor'
 import { ProfileModal } from '@/components/profile-modal'
 import { ShortcutsModal } from '@/components/shortcuts-modal'
+import { FancyNotificationToast } from '@/components/fancy-notification-toast'
+import { notificationManager } from '@/lib/notification-manager'
 import DOMPurify from 'dompurify'
 
 type Folder = 'Inbox' | 'Starred' | 'Sent' | 'Drafts' | 'Archive' | 'Spam' | 'Trash'
@@ -218,6 +220,9 @@ export default function Page() {
   const [accountsModalOpen, setAccountsModalOpen] = useState(false)
   const [profileModalOpen, setProfileModalOpen] = useState(false)
   const [shortcutsModalOpen, setShortcutsModalOpen] = useState(false)
+  const [incomingToastEmail, setIncomingToastEmail] = useState<EmailItem | null>(null)
+  const knownEmailIdsRef = useRef<Set<number>>(new Set())
+  const isInitialLoadRef = useRef(true)
   const [composeOpen, setComposeOpen] = useState(false)
   const [mailboxDropdownOpen, setMailboxDropdownOpen] = useState(false)
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -445,10 +450,14 @@ export default function Page() {
 
     isSyncingRef.current = true
     try {
-      if (activeAccId && notify) {
-        const syncRes = await api.syncAccount(activeAccId)
-        if (syncRes.fetched_count && syncRes.fetched_count > 0) {
-          showSuccess('Inbox Synced', `${syncRes.fetched_count} new messages fetched.`)
+      if (activeAccId) {
+        try {
+          const syncRes = await api.syncAccount(activeAccId)
+          if (notify && syncRes.fetched_count && syncRes.fetched_count > 0) {
+            showSuccess('Inbox Synced', `${syncRes.fetched_count} new messages fetched.`)
+          }
+        } catch (e) {
+          if (notify) throw e
         }
       }
 
@@ -460,6 +469,39 @@ export default function Page() {
       }
       if (res.storage) {
         setStorageInfo(res.storage)
+      }
+
+      // Check for newly arrived emails to trigger audio chime and notifications
+      if (isInitialLoadRef.current) {
+        fetchedEmails.forEach((e) => knownEmailIdsRef.current.add(e.id))
+        if (fetchedEmails.length > 0) {
+          isInitialLoadRef.current = false
+        }
+      } else {
+        const newlyReceived = fetchedEmails.filter(
+          (e) => !knownEmailIdsRef.current.has(e.id) && e.folder === 'Inbox' && e.unread
+        )
+        fetchedEmails.forEach((e) => knownEmailIdsRef.current.add(e.id))
+
+        if (newlyReceived.length > 0) {
+          const latestNew = newlyReceived[0]
+          // 1. Play crystal-clear glass audio chime
+          notificationManager.playChime()
+
+          // 2. Display fancy in-app toast
+          setIncomingToastEmail(latestNew)
+
+          // 3. Trigger Native OS Notification (PWA / desktop / mobile)
+          notificationManager.showOsNotification(
+            `New message from ${latestNew.sender_name || latestNew.sender_email}`,
+            `${latestNew.subject || '(No Subject)'}\n${latestNew.preview || ''}`,
+            latestNew.id,
+            () => {
+              const matchingThread = threadsRef.current.find((t) => t.emails.some((em) => em.id === latestNew.id))
+              if (matchingThread) selectThread(matchingThread)
+            }
+          )
+        }
       }
 
       emailCache.set(activeAccId, activeFolder, activeQuery, filter, fetchedEmails)
@@ -487,7 +529,7 @@ export default function Page() {
     return () => clearTimeout(timer)
   }, [query, selectedTag])
 
-  // Gmail Style background auto-polling every 25 seconds
+  // Fast background auto-polling every 12 seconds + instant on tab focus/visibility
   useEffect(() => {
     if (!user || !mounted) return
 
@@ -495,10 +537,31 @@ export default function Page() {
 
     const interval = setInterval(() => {
       handleSync(false, true, currentFolderRef.current, currentAccountRef.current)
-    }, 25000)
+    }, 12000)
 
-    return () => clearInterval(interval)
+    // Instant sync when user switches back to the tab or focuses the app
+    const handleFocusSync = () => {
+      if (document.visibilityState === 'visible') {
+        handleSync(false, true, currentFolderRef.current, currentAccountRef.current)
+      }
+    }
+
+    window.addEventListener('focus', handleFocusSync)
+    document.addEventListener('visibilitychange', handleFocusSync)
+
+    return () => {
+      clearInterval(interval)
+      window.removeEventListener('focus', handleFocusSync)
+      document.removeEventListener('visibilitychange', handleFocusSync)
+    }
   }, [folder, filter, selectedAccountId, user, mounted])
+
+  // Request browser Notification permission on mount
+  useEffect(() => {
+    if (mounted && user) {
+      notificationManager.requestPermission().catch(() => {})
+    }
+  }, [mounted, user])
 
   const visibleEmails = useMemo(() => {
     return emails.filter((email) => {
@@ -558,6 +621,13 @@ export default function Page() {
     () => emails.filter((email) => email.folder === 'Inbox' && email.unread).length,
     [emails]
   )
+
+  // Sync App Badge, Dynamic Favicon Dot, and Tab Title with unreadCount
+  useEffect(() => {
+    notificationManager.updateAppBadge(unreadCount)
+    notificationManager.updateFaviconDot(unreadCount > 0)
+    notificationManager.updateTabTitle(unreadCount, folder)
+  }, [unreadCount, folder])
 
   const selectThread = async (thread: EmailThread) => {
     if (thread.latestEmail.folder === 'Drafts') {
@@ -1793,6 +1863,21 @@ export default function Page() {
       <ShortcutsModal
         isOpen={shortcutsModalOpen}
         onClose={() => setShortcutsModalOpen(false)}
+      />
+
+      {/* Fancy In-App Notification Toast */}
+      <FancyNotificationToast
+        email={incomingToastEmail}
+        onClose={() => setIncomingToastEmail(null)}
+        onView={(email) => {
+          const matchingThread = threadsRef.current.find((t) => t.emails.some((em) => em.id === email.id))
+          if (matchingThread) {
+            selectThread(matchingThread)
+          }
+        }}
+        onArchive={(email) => {
+          handleArchiveEmail(email.id)
+        }}
       />
     </main>
   )
