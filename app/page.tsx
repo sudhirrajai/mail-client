@@ -31,6 +31,8 @@ import {
   LogOut,
   Layers,
   MessageSquare,
+  Keyboard,
+  Download,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { api, EmailItem, EmailAccount, User } from '@/lib/api'
@@ -42,6 +44,7 @@ import { useToast } from '@/components/toast'
 import { EmailListSkeleton, EmailReaderSkeleton } from '@/components/email-skeleton'
 import { RichTextEditor } from '@/components/rich-text-editor'
 import { ProfileModal } from '@/components/profile-modal'
+import { ShortcutsModal } from '@/components/shortcuts-modal'
 import DOMPurify from 'dompurify'
 
 type Folder = 'Inbox' | 'Starred' | 'Sent' | 'Drafts' | 'Archive' | 'Spam' | 'Trash'
@@ -214,8 +217,11 @@ export default function Page() {
   // Modals & Dropdown State
   const [accountsModalOpen, setAccountsModalOpen] = useState(false)
   const [profileModalOpen, setProfileModalOpen] = useState(false)
+  const [shortcutsModalOpen, setShortcutsModalOpen] = useState(false)
   const [composeOpen, setComposeOpen] = useState(false)
   const [mailboxDropdownOpen, setMailboxDropdownOpen] = useState(false)
+  const searchInputRef = useRef<HTMLInputElement>(null)
+  const gPendingRef = useRef<NodeJS.Timeout | null>(null)
 
   // Compose State
   const composeFileInputRef = useRef<HTMLInputElement>(null)
@@ -548,54 +554,10 @@ export default function Page() {
     [threads, selectedThreadKey]
   )
 
-  // Non-Conflicting Keyboard Shortcuts Listener
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      const activeEl = document.activeElement
-      const isTyping =
-        activeEl &&
-        (activeEl.tagName === 'INPUT' ||
-          activeEl.tagName === 'TEXTAREA' ||
-          (activeEl as HTMLElement).isContentEditable)
-
-      if (e.key === 'Escape') {
-        if (composeOpen) setComposeOpen(false)
-        else if (accountsModalOpen) setAccountsModalOpen(false)
-        else if (mailboxDropdownOpen) setMailboxDropdownOpen(false)
-        else if (selectedThreadKey) setSelectedThreadKey(null)
-        return
-      }
-
-      if (isTyping) return
-
-      const key = e.key.toLowerCase()
-
-      if (key === 'c') {
-        e.preventDefault()
-        if (accounts.length > 0) setComposeOpen(true)
-      } else if (key === 'r' && selectedThread) {
-        e.preventDefault()
-        const latest = selectedThread.latestEmail
-        setComposeTo(latest.sender_email)
-        setComposeSubject(`Re: ${selectedThread.subject}`)
-        setComposeOpen(true)
-      } else if ((key === 'e' || key === 'a') && selectedThread) {
-        e.preventDefault()
-        selectedThread.emails.forEach((e) => handleArchiveEmail(e.id))
-      } else if (key === 's' && selectedThread) {
-        e.preventDefault()
-        toggleStar(selectedThread.latestEmail.id)
-      } else if (key === 'd' && selectedThread) {
-        e.preventDefault()
-        selectedThread.emails.forEach((e) => handleDeleteEmail(e.id))
-      }
-    }
-
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [selectedThreadKey, composeOpen, accountsModalOpen, mailboxDropdownOpen, accounts, selectedThread])
-
-  const unreadCount = emails.filter((email) => email.folder === 'Inbox' && email.unread).length
+  const unreadCount = useMemo(
+    () => emails.filter((email) => email.folder === 'Inbox' && email.unread).length,
+    [emails]
+  )
 
   const selectThread = async (thread: EmailThread) => {
     if (thread.latestEmail.folder === 'Drafts') {
@@ -626,6 +588,201 @@ export default function Page() {
       }
     })
   }
+
+  // Refs for keyboard shortcuts to always access up-to-date data without rebinding
+  const threadsRef = useRef(threads)
+  threadsRef.current = threads
+  const selectedThreadRef = useRef(selectedThread)
+  selectedThreadRef.current = selectedThread
+  const selectedThreadKeyRef = useRef(selectedThreadKey)
+  selectedThreadKeyRef.current = selectedThreadKey
+
+  // Power-User Keyboard Shortcuts Listener (Desktop, Laptop & PWA)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // 1. Check Cmd+Enter or Ctrl+Enter to send email in compose modal
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        if (composeOpen) {
+          e.preventDefault()
+          const form = document.getElementById('compose-email-form') as HTMLFormElement
+          if (form) {
+            form.requestSubmit()
+            return
+          }
+        }
+      }
+
+      // 2. Escape: closes open modals or deselects active thread
+      if (e.key === 'Escape') {
+        if (shortcutsModalOpen) setShortcutsModalOpen(false)
+        else if (profileModalOpen) setProfileModalOpen(false)
+        else if (composeOpen) setComposeOpen(false)
+        else if (accountsModalOpen) setAccountsModalOpen(false)
+        else if (mailboxDropdownOpen) setMailboxDropdownOpen(false)
+        else if (selectedThreadKeyRef.current) setSelectedThreadKey(null)
+        return
+      }
+
+      const activeEl = document.activeElement
+      const isTyping =
+        activeEl &&
+        (activeEl.tagName === 'INPUT' ||
+          activeEl.tagName === 'TEXTAREA' ||
+          (activeEl as HTMLElement).isContentEditable)
+
+      if (isTyping) return
+
+      const key = e.key.toLowerCase()
+
+      // 3. Question mark (?): open keyboard shortcuts cheat sheet
+      if (e.key === '?' || (e.shiftKey && e.key === '/')) {
+        e.preventDefault()
+        setShortcutsModalOpen((prev) => !prev)
+        return
+      }
+
+      // 4. Slash (/): focus search bar
+      if (e.key === '/') {
+        e.preventDefault()
+        searchInputRef.current?.focus()
+        searchInputRef.current?.select()
+        return
+      }
+
+      // 5. 'g' then key: Jump to Folder
+      if (gPendingRef.current) {
+        clearTimeout(gPendingRef.current)
+        gPendingRef.current = null
+        if (key === 'i') { e.preventDefault(); setFolder('Inbox'); setSelectedThreadKey(null); return }
+        if (key === 's') { e.preventDefault(); setFolder('Starred'); setSelectedThreadKey(null); return }
+        if (key === 't') { e.preventDefault(); setFolder('Sent'); setSelectedThreadKey(null); return }
+        if (key === 'd') { e.preventDefault(); setFolder('Drafts'); setSelectedThreadKey(null); return }
+        if (key === 'a') { e.preventDefault(); setFolder('Archive'); setSelectedThreadKey(null); return }
+        if (key === 'p') { e.preventDefault(); setFolder('Spam'); setSelectedThreadKey(null); return }
+        if (key === 'x') { e.preventDefault(); setFolder('Trash'); setSelectedThreadKey(null); return }
+      }
+
+      if (key === 'g') {
+        e.preventDefault()
+        gPendingRef.current = setTimeout(() => {
+          gPendingRef.current = null
+        }, 1200)
+        return
+      }
+
+      // 6. Navigation: j or Down Arrow (Next thread)
+      if (key === 'j' || e.key === 'ArrowDown') {
+        e.preventDefault()
+        const currentThreads = threadsRef.current
+        if (currentThreads.length === 0) return
+        if (!selectedThreadKeyRef.current) {
+          selectThread(currentThreads[0])
+        } else {
+          const currentIndex = currentThreads.findIndex((t) => t.threadKey === selectedThreadKeyRef.current)
+          if (currentIndex >= 0 && currentIndex < currentThreads.length - 1) {
+            selectThread(currentThreads[currentIndex + 1])
+          }
+        }
+        return
+      }
+
+      // 7. Navigation: k or Up Arrow (Previous thread)
+      if (key === 'k' || e.key === 'ArrowUp') {
+        e.preventDefault()
+        const currentThreads = threadsRef.current
+        if (currentThreads.length === 0) return
+        if (!selectedThreadKeyRef.current) {
+          selectThread(currentThreads[0])
+        } else {
+          const currentIndex = currentThreads.findIndex((t) => t.threadKey === selectedThreadKeyRef.current)
+          if (currentIndex > 0) {
+            selectThread(currentThreads[currentIndex - 1])
+          }
+        }
+        return
+      }
+
+      // 8. Open: Enter or 'o'
+      if (e.key === 'Enter' || key === 'o') {
+        const currentThreads = threadsRef.current
+        if (!selectedThreadKeyRef.current && currentThreads.length > 0) {
+          e.preventDefault()
+          selectThread(currentThreads[0])
+          return
+        }
+      }
+
+      // 9. Back: 'u'
+      if (key === 'u') {
+        if (selectedThreadKeyRef.current) {
+          e.preventDefault()
+          setSelectedThreadKey(null)
+          return
+        }
+      }
+
+      // 10. Compose: 'c' or 'n'
+      if (key === 'c' || key === 'n') {
+        e.preventDefault()
+        if (accounts.length > 0) {
+          setComposeOpen(true)
+        } else {
+          showError('No Connected Mailbox', 'Please connect an SMTP email account in settings first.')
+          setAccountsModalOpen(true)
+        }
+        return
+      }
+
+      // 11. Actions on active/selected thread
+      const currentThread = selectedThreadRef.current
+      if (currentThread) {
+        const latest = currentThread.latestEmail
+
+        if (key === 'r') {
+          // Reply
+          e.preventDefault()
+          setComposeTo(latest.sender_email)
+          setComposeSubject(`Re: ${currentThread.subject}`)
+          setComposeOpen(true)
+        } else if (key === 'e' || key === 'y') {
+          // Archive
+          e.preventDefault()
+          currentThread.emails.forEach((em) => handleArchiveEmail(em.id))
+          const currentThreads = threadsRef.current
+          const currentIndex = currentThreads.findIndex((t) => t.threadKey === selectedThreadKeyRef.current)
+          if (currentIndex >= 0 && currentIndex < currentThreads.length - 1) {
+            selectThread(currentThreads[currentIndex + 1])
+          } else if (currentIndex > 0) {
+            selectThread(currentThreads[currentIndex - 1])
+          } else {
+            setSelectedThreadKey(null)
+          }
+        } else if (key === 's') {
+          // Star
+          e.preventDefault()
+          toggleStar(latest.id)
+        } else if (key === '!' || (e.shiftKey && e.key === '1')) {
+          // Report Spam
+          e.preventDefault()
+          currentThread.emails.forEach((em) => handleSpamEmail(em.id))
+          setSelectedThreadKey(null)
+        } else if (key === 'd' || e.key === 'Delete' || key === '#') {
+          // Delete
+          e.preventDefault()
+          currentThread.emails.forEach((em) => handleDeleteEmail(em.id))
+          setSelectedThreadKey(null)
+        } else if (key === 'm') {
+          // Toggle Unread
+          e.preventDefault()
+          const newUnread = !currentThread.unread
+          currentThread.emails.forEach((em) => handleToggleUnread(em.id, newUnread))
+        }
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [composeOpen, accountsModalOpen, profileModalOpen, shortcutsModalOpen, mailboxDropdownOpen, accounts])
 
   const handleToggleUnread = async (id: number, unread: boolean) => {
     setEmails((current) => current.map((e) => (e.id === id ? { ...e, unread } : e)))
@@ -1072,6 +1229,29 @@ export default function Page() {
                 <Settings />
               </IconButton>
             </div>
+
+            {/* Quick Actions (Install PWA & Shortcuts Help) */}
+            <div className="flex items-center gap-1.5 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  window.dispatchEvent(new CustomEvent('pwa-open-install'))
+                }}
+                className="flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-border/70 bg-muted/30 py-1.5 text-[11px] font-medium text-foreground hover:bg-muted/70 transition cursor-pointer"
+                title="Install Progressive Web App on Mobile or Desktop"
+              >
+                <Download className="size-3.5 text-primary" /> Install App
+              </button>
+              <button
+                type="button"
+                onClick={() => setShortcutsModalOpen(true)}
+                className="flex items-center justify-center gap-1 rounded-lg border border-border/70 bg-muted/30 px-2.5 py-1.5 text-[11px] font-medium text-foreground hover:bg-muted/70 transition cursor-pointer"
+                title="View Keyboard Shortcuts (?)"
+              >
+                <Keyboard className="size-3.5 text-muted-foreground" />
+                <span>?</span>
+              </button>
+            </div>
           </div>
         </aside>
         </>
@@ -1091,11 +1271,15 @@ export default function Page() {
           <div className="relative min-w-0 flex-1">
             <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <input
+              ref={searchInputRef}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search messages or senders..."
-              className="h-9 w-full rounded-xl border border-border/70 bg-muted/30 pl-9 pr-3 text-sm outline-none placeholder:text-muted-foreground focus:border-primary transition"
+              placeholder="Search messages... (/)"
+              className="h-9 w-full rounded-xl border border-border/70 bg-muted/30 pl-9 pr-7 text-sm outline-none placeholder:text-muted-foreground focus:border-primary transition"
             />
+            <kbd className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none hidden sm:inline-flex h-4.5 select-none items-center rounded border border-border/80 bg-muted px-1 font-mono text-[10px] font-medium text-muted-foreground">
+              /
+            </kbd>
           </div>
 
           <FilterDropdown value={filter} onChange={setFilter} />
@@ -1472,7 +1656,7 @@ export default function Page() {
       {/* Compose Email Modal */}
       {composeOpen && (
         <div className="fixed inset-x-0 bottom-0 sm:inset-x-auto sm:right-4 z-50 flex h-[min(620px,calc(100dvh-1rem))] sm:h-[min(620px,calc(100vh-2rem))] w-full sm:w-[580px] flex-col overflow-hidden rounded-t-2xl sm:rounded-2xl border border-border bg-card shadow-2xl">
-          <form onSubmit={handleSendEmail} className="flex min-h-0 flex-1 flex-col">
+          <form id="compose-email-form" onSubmit={handleSendEmail} className="flex min-h-0 flex-1 flex-col">
             <header className="flex shrink-0 items-center gap-3 border-b border-border/70 bg-muted/30 px-4 py-3">
               <span className="text-sm font-semibold">New message</span>
               <div className="ml-auto flex items-center gap-1">
@@ -1593,6 +1777,12 @@ export default function Page() {
           setUser(updatedUser)
           localStorage.setItem('mosaic_cached_user', JSON.stringify(updatedUser))
         }}
+      />
+
+      {/* Keyboard Shortcuts Cheat Sheet Modal */}
+      <ShortcutsModal
+        isOpen={shortcutsModalOpen}
+        onClose={() => setShortcutsModalOpen(false)}
       />
     </main>
   )
