@@ -952,20 +952,22 @@ export default function Page() {
             className="fixed inset-0 z-40 bg-black/60 backdrop-blur-xs md:hidden"
             onClick={() => setSidebarOpen(false)}
           />
-          <aside className="fixed inset-y-0 left-0 z-50 flex h-dvh w-72 flex-col border-r border-border/80 bg-card p-3 shadow-2xl animate-in slide-in-from-left duration-200 md:static md:z-auto md:h-auto md:w-60 md:border-border/70 md:bg-card/50 md:shadow-none md:animate-none">
-            {/* Mobile Header with Close Button */}
-            <div className="mb-2 flex items-center justify-between pb-2 border-b border-border/60 md:hidden">
-              <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Navigation</span>
-              <button
-                type="button"
-                onClick={() => setSidebarOpen(false)}
-                className="rounded-lg p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition cursor-pointer"
-              >
-                <X className="size-4" />
-              </button>
-            </div>
-            {mounted && user ? (
-            <div className="mb-4 flex items-center justify-between gap-2 rounded-xl border border-border/70 bg-muted/30 p-2">
+          <aside className="fixed inset-y-0 left-0 z-50 flex h-dvh w-72 flex-col justify-between overflow-hidden border-r border-border/80 bg-card p-3 shadow-2xl animate-in slide-in-from-left duration-200 md:static md:z-auto md:h-full md:w-60 md:border-border/70 md:bg-card/50 md:shadow-none md:animate-none">
+            {/* Top Fixed Block */}
+            <div className="shrink-0 space-y-2.5 pb-1">
+              {/* Mobile Header with Close Button */}
+              <div className="flex items-center justify-between pb-2 border-b border-border/60 md:hidden">
+                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Navigation</span>
+                <button
+                  type="button"
+                  onClick={() => setSidebarOpen(false)}
+                  className="rounded-lg p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition cursor-pointer"
+                >
+                  <X className="size-4" />
+                </button>
+              </div>
+              {mounted && user ? (
+              <div className="flex items-center justify-between gap-2 rounded-xl border border-border/70 bg-muted/30 p-2">
               <button
                 type="button"
                 onClick={() => {
@@ -1003,203 +1005,211 @@ export default function Page() {
             </div>
           )}
 
-          <button
-            onClick={() => {
-              if (typeof window !== 'undefined' && window.innerWidth < 768) {
-                setSidebarOpen(false)
-              }
-              if (accounts.length === 0) {
-                showError('No Connected Mailbox', 'Please connect an SMTP email account in settings first.')
-                setAccountsModalOpen(true)
-                return
-              }
-              setComposeOpen(true)
-            }}
-            className="mb-5 flex h-10 items-center justify-center gap-2 rounded-xl bg-primary text-sm font-semibold text-primary-foreground shadow-sm transition hover:opacity-90"
-          >
-            <Plus className="size-4" /> Compose email
-          </button>
+            <button
+              onClick={() => {
+                if (typeof window !== 'undefined' && window.innerWidth < 768) {
+                  setSidebarOpen(false)
+                }
+                if (accounts.length === 0) {
+                  showError('No Connected Mailbox', 'Please connect an SMTP email account in settings first.')
+                  setAccountsModalOpen(true)
+                  return
+                }
+                setComposeOpen(true)
+              }}
+              className="flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-primary text-sm font-semibold text-primary-foreground shadow-sm transition hover:opacity-90 cursor-pointer"
+            >
+              <Plus className="size-4" /> Compose email
+            </button>
 
-          {/* Mailboxes / Accounts Dropdown Selector */}
-          <div className="relative mb-4">
-            <div className="flex items-center justify-between px-3 pb-1.5">
-              <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                Mailboxes ({mounted ? accounts.length : 0})
-              </p>
-              <button
-                onClick={() => setAccountsModalOpen(true)}
-                className="text-xs text-primary hover:underline font-semibold flex items-center gap-1"
-              >
-                <Plus className="size-3" /> Add
-              </button>
-            </div>
-
-            {!mounted ? (
-              <div className="space-y-1 px-1">
-                <div className="h-9 w-full animate-pulse rounded-xl bg-muted/40" />
-              </div>
-            ) : accounts.length === 0 ? (
-              <button
-                onClick={() => setAccountsModalOpen(true)}
-                className="w-full text-left rounded-xl border border-dashed border-primary/40 bg-primary/5 p-3 text-xs text-primary hover:bg-primary/10 transition"
-              >
-                <p className="font-semibold flex items-center gap-1.5"><Server className="size-3.5" /> Connect Account</p>
-                <p className="text-[10px] text-muted-foreground mt-0.5">Add SMTP & IMAP credentials to sync emails.</p>
-              </button>
-            ) : (
-              <div className="relative">
+            {/* Mailboxes / Accounts Dropdown Selector */}
+            <div className="relative">
+              <div className="flex items-center justify-between px-3 pb-1.5">
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Mailboxes ({mounted ? accounts.length : 0})
+                </p>
                 <button
-                  onClick={() => setMailboxDropdownOpen(!mailboxDropdownOpen)}
-                  className="flex w-full items-center justify-between gap-2 rounded-xl border border-border/80 bg-muted/30 px-3 py-2 text-xs font-semibold text-foreground hover:bg-muted/60 transition"
+                  onClick={() => setAccountsModalOpen(true)}
+                  className="text-xs text-primary hover:underline font-semibold flex items-center gap-1 cursor-pointer"
                 >
-                  <div className="flex items-center gap-2 min-w-0">
-                    {selectedAccountId === undefined ? (
-                      <Layers className="size-3.5 shrink-0 text-primary" />
-                    ) : (
-                      <Server className="size-3.5 shrink-0 text-primary" />
-                    )}
-                    <span className="truncate">
-                      {selectedAccountId === undefined
-                        ? 'Unified Inbox'
-                        : accounts.find((a) => a.id === selectedAccountId)?.name || 'Select Mailbox'}
-                    </span>
-                  </div>
-                  <ChevronDown className={cn('size-3.5 shrink-0 text-muted-foreground transition-transform', mailboxDropdownOpen && 'rotate-180')} />
+                  <Plus className="size-3" /> Add
                 </button>
+              </div>
 
-                {mailboxDropdownOpen && (
-                  <div className="absolute left-0 right-0 top-full z-30 mt-1 overflow-hidden rounded-xl border border-border bg-card p-1 shadow-xl backdrop-blur-lg animate-in fade-in-50 zoom-in-95">
-                    <button
-                      onClick={() => {
-                        handleAccountChange(undefined)
-                        setMailboxDropdownOpen(false)
-                      }}
-                      className={cn(
-                        'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs transition hover:bg-muted',
-                        selectedAccountId === undefined && 'bg-primary/15 font-semibold text-primary'
+              {!mounted ? (
+                <div className="space-y-1 px-1">
+                  <div className="h-9 w-full animate-pulse rounded-xl bg-muted/40" />
+                </div>
+              ) : accounts.length === 0 ? (
+                <button
+                  onClick={() => setAccountsModalOpen(true)}
+                  className="w-full text-left rounded-xl border border-dashed border-primary/40 bg-primary/5 p-3 text-xs text-primary hover:bg-primary/10 transition cursor-pointer"
+                >
+                  <p className="font-semibold flex items-center gap-1.5"><Server className="size-3.5" /> Connect Account</p>
+                  <p className="text-[10px] text-muted-foreground mt-0.5">Add SMTP & IMAP credentials to sync emails.</p>
+                </button>
+              ) : (
+                <div className="relative">
+                  <button
+                    onClick={() => setMailboxDropdownOpen(!mailboxDropdownOpen)}
+                    className="flex w-full items-center justify-between gap-2 rounded-xl border border-border/80 bg-muted/30 px-3 py-2 text-xs font-semibold text-foreground hover:bg-muted/60 transition cursor-pointer"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      {selectedAccountId === undefined ? (
+                        <Layers className="size-3.5 shrink-0 text-primary" />
+                      ) : (
+                        <Server className="size-3.5 shrink-0 text-primary" />
                       )}
-                    >
-                      <Layers className="size-3.5 text-primary shrink-0" />
-                      <div className="text-left min-w-0 flex-1">
-                        <p className="truncate font-medium">Unified Inbox</p>
-                        <p className="truncate text-[10px] text-muted-foreground">All accounts combined</p>
-                      </div>
-                    </button>
+                      <span className="truncate">
+                        {selectedAccountId === undefined
+                          ? 'Unified Inbox'
+                          : accounts.find((a) => a.id === selectedAccountId)?.name || 'Select Mailbox'}
+                      </span>
+                    </div>
+                    <ChevronDown className={cn('size-3.5 shrink-0 text-muted-foreground transition-transform', mailboxDropdownOpen && 'rotate-180')} />
+                  </button>
 
-                    <div className="my-1 border-t border-border/60" />
-
-                    {accounts.map((acc) => (
+                  {mailboxDropdownOpen && (
+                    <div className="absolute left-0 right-0 top-full z-30 mt-1 overflow-hidden rounded-xl border border-border bg-card p-1 shadow-xl backdrop-blur-lg animate-in fade-in-50 zoom-in-95">
                       <button
-                        key={acc.id}
                         onClick={() => {
-                          handleAccountChange(acc.id)
+                          handleAccountChange(undefined)
                           setMailboxDropdownOpen(false)
                         }}
                         className={cn(
-                          'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs transition hover:bg-muted',
-                          selectedAccountId === acc.id && 'bg-primary/15 font-semibold text-primary'
+                          'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs transition hover:bg-muted cursor-pointer',
+                          selectedAccountId === undefined && 'bg-primary/15 font-semibold text-primary'
                         )}
                       >
-                        <Server className="size-3.5 text-primary shrink-0" />
+                        <Layers className="size-3.5 text-primary shrink-0" />
                         <div className="text-left min-w-0 flex-1">
-                          <p className="truncate font-medium">{acc.name}</p>
-                          <p className="truncate text-[10px] text-muted-foreground">{acc.email_address}</p>
+                          <p className="truncate font-medium">Unified Inbox</p>
+                          <p className="truncate text-[10px] text-muted-foreground">All accounts combined</p>
                         </div>
                       </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
 
-          {/* Folder Navigation */}
-          <div className="flex flex-col gap-1">
-            {Object.entries(folderIcons).map(([name, Icon]) => {
-              const key = name as Folder
-              const count = folderCounts[key] !== undefined ? folderCounts[key] : (key === 'Inbox' ? unreadCount : 0)
-              return (
-                <button
-                  key={name}
-                  onClick={() => handleFolderChange(key)}
-                  className={cn(
-                    'flex h-9 items-center gap-3 rounded-lg px-3 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground',
-                    folder === key && 'bg-primary/10 font-medium text-primary'
-                  )}
-                >
-                  <div className="relative flex items-center">
-                    <Icon className="size-4" />
-                    {key === 'Inbox' && count > 0 && (
-                      <span className="absolute -right-1 -top-1 size-2 rounded-full bg-primary ring-2 ring-background animate-pulse" />
-                    )}
-                  </div>
-                  <span className="flex-1 text-left">{name}</span>
-                  {count > 0 && (
-                    <span className="rounded-full bg-primary/20 px-2 py-0.5 text-[11px] font-semibold text-primary">
-                      {count}
-                    </span>
-                  )}
-                </button>
-              )
-            })}
-          </div>
+                      <div className="my-1 border-t border-border/60" />
 
-          <div className="mt-7">
-            <div className="flex items-center justify-between px-3 pb-2">
-              <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                Labels
-              </p>
-              {selectedTag && (
-                <button
-                  type="button"
-                  onClick={() => setSelectedTag(null)}
-                  className="text-[11px] text-primary hover:underline cursor-pointer"
-                >
-                  Clear
-                </button>
+                      {accounts.map((acc) => (
+                        <button
+                          key={acc.id}
+                          onClick={() => {
+                            handleAccountChange(acc.id)
+                            setMailboxDropdownOpen(false)
+                          }}
+                          className={cn(
+                            'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs transition hover:bg-muted cursor-pointer',
+                            selectedAccountId === acc.id && 'bg-primary/15 font-semibold text-primary'
+                          )}
+                        >
+                          <Server className="size-3.5 text-primary shrink-0" />
+                          <div className="text-left min-w-0 flex-1">
+                            <p className="truncate font-medium">{acc.name}</p>
+                            <p className="truncate text-[10px] text-muted-foreground">{acc.email_address}</p>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               )}
             </div>
-            <div className="flex flex-col gap-1">
-              {[
-                ['Work', 'bg-sky-500'],
-                ['Personal', 'bg-emerald-500'],
-                ['Finance', 'bg-violet-500'],
-                ['Urgent', 'bg-red-500'],
-              ].map(([label, dot]) => {
-                const tagCount = emails.filter((e) => e.tags && e.tags.includes(label)).length
-                const isActive = selectedTag === label
+          </div>
+          {/* End Top Fixed Block */}
+
+          {/* Middle Scrollable Section (Folders & Labels) */}
+          <div className="flex-1 min-h-0 overflow-y-auto sidebar-scroll pr-1 py-1 space-y-3">
+            {/* Folder Navigation */}
+            <div className="flex flex-col gap-0.5">
+              {Object.entries(folderIcons).map(([name, Icon]) => {
+                const key = name as Folder
+                const count = folderCounts[key] !== undefined ? folderCounts[key] : (key === 'Inbox' ? unreadCount : 0)
                 return (
                   <button
-                    key={label}
-                    onClick={() => {
-                      setSelectedTag(isActive ? null : label)
-                      if (typeof window !== 'undefined' && window.innerWidth < 768) {
-                        setSidebarOpen(false)
-                      }
-                    }}
+                    key={name}
+                    onClick={() => handleFolderChange(key)}
                     className={cn(
-                      'flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground cursor-pointer',
-                      isActive && 'bg-primary/10 font-medium text-primary'
+                      'flex h-9 items-center gap-3 rounded-lg px-3 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground cursor-pointer',
+                      folder === key && 'bg-primary/10 font-medium text-primary'
                     )}
                   >
-                    <span className={cn('size-2 rounded-full', dot)} />
-                    <span className="flex-1 text-left">{label}</span>
-                    {tagCount > 0 && (
-                      <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">
-                        {tagCount}
+                    <div className="relative flex items-center">
+                      <Icon className="size-4" />
+                      {key === 'Inbox' && count > 0 && (
+                        <span className="absolute -right-1 -top-1 size-2 rounded-full bg-primary ring-2 ring-background animate-pulse" />
+                      )}
+                    </div>
+                    <span className="flex-1 text-left">{name}</span>
+                    {count > 0 && (
+                      <span className="rounded-full bg-primary/20 px-2 py-0.5 text-[11px] font-semibold text-primary">
+                        {count}
                       </span>
                     )}
                   </button>
                 )
               })}
             </div>
-          </div>
 
-          <div className="mt-auto flex flex-col gap-3 border-t border-border/70 pt-4">
+            {/* Labels */}
+            <div className="pt-1">
+              <div className="flex items-center justify-between px-3 pb-1.5">
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Labels
+                </p>
+                {selectedTag && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedTag(null)}
+                    className="text-[11px] text-primary hover:underline cursor-pointer"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+              <div className="flex flex-col gap-0.5">
+                {[
+                  ['Work', 'bg-sky-500'],
+                  ['Personal', 'bg-emerald-500'],
+                  ['Finance', 'bg-violet-500'],
+                  ['Urgent', 'bg-red-500'],
+                ].map(([label, dot]) => {
+                  const tagCount = emails.filter((e) => e.tags && e.tags.includes(label)).length
+                  const isActive = selectedTag === label
+                  return (
+                    <button
+                      key={label}
+                      onClick={() => {
+                        setSelectedTag(isActive ? null : label)
+                        if (typeof window !== 'undefined' && window.innerWidth < 768) {
+                          setSidebarOpen(false)
+                        }
+                      }}
+                      className={cn(
+                        'flex items-center gap-3 rounded-lg px-3 py-1.5 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground cursor-pointer',
+                        isActive && 'bg-primary/10 font-medium text-primary'
+                      )}
+                    >
+                      <span className={cn('size-2 rounded-full', dot)} />
+                      <span className="flex-1 text-left">{label}</span>
+                      {tagCount > 0 && (
+                        <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">
+                          {tagCount}
+                        </span>
+                      )}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          </div>
+          {/* End Middle Scrollable Section */}
+
+          {/* Bottom Fixed Footer - Guaranteed 100% visible on any screen without zooming out */}
+          <div className="shrink-0 border-t border-border/70 pt-2.5 space-y-2 mt-auto">
             <div>
-              <div className="mb-2 flex justify-between text-[11px] text-muted-foreground">
+              <div className="mb-1 flex justify-between text-[11px] text-muted-foreground">
                 <span>Storage</span>
-                <span>{storageInfo.formatted || 'Calculating...'}</span>
+                <span className="font-medium text-foreground">{storageInfo.formatted || 'Calculating...'}</span>
               </div>
               <div className="h-1.5 overflow-hidden rounded-full bg-muted">
                 <div
@@ -1216,9 +1226,9 @@ export default function Page() {
                   }
                   setAccountsModalOpen(true)
                 }}
-                className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold text-primary hover:bg-primary/10 cursor-pointer"
+                className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-primary hover:bg-primary/10 transition cursor-pointer"
               >
-                <Server className="size-4" /> SMTP / IMAP Settings
+                <Server className="size-3.5" /> SMTP / IMAP Settings
               </button>
               <IconButton label="Settings" onClick={() => {
                 if (typeof window !== 'undefined' && window.innerWidth < 768) {
@@ -1231,7 +1241,7 @@ export default function Page() {
             </div>
 
             {/* Quick Actions (Install PWA & Shortcuts Help) */}
-            <div className="flex items-center gap-1.5 pt-1">
+            <div className="flex items-center gap-1.5">
               <button
                 type="button"
                 onClick={() => {
