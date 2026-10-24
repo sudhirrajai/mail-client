@@ -260,10 +260,12 @@ export default function Page() {
     }
   }
 
-  // Observer Subscriptions to MailEventBus
   useEffect(() => {
     setMounted(true)
     if (typeof window !== 'undefined') {
+      if (window.innerWidth < 768) {
+        setSidebarOpen(false)
+      }
       const params = new URLSearchParams(window.location.search)
       const fParam = params.get('folder') as Folder
       if (fParam && ['Inbox', 'Starred', 'Sent', 'Drafts', 'Archive', 'Spam', 'Trash'].includes(fParam)) {
@@ -363,6 +365,9 @@ export default function Page() {
   }
 
   const handleFolderChange = (newFolder: Folder) => {
+    if (typeof window !== 'undefined' && window.innerWidth < 768) {
+      setSidebarOpen(false)
+    }
     if (newFolder === folder) return
     setFolder(newFolder)
     currentFolderRef.current = newFolder
@@ -386,6 +391,9 @@ export default function Page() {
   }
 
   const handleAccountChange = (accId: number | undefined) => {
+    if (typeof window !== 'undefined' && window.innerWidth < 768) {
+      setSidebarOpen(false)
+    }
     if (accId === selectedAccountId) return
     setSelectedAccountId(accId)
     currentAccountRef.current = accId
@@ -764,10 +772,27 @@ export default function Page() {
 
   return (
     <main className="flex h-dvh overflow-hidden bg-background text-foreground">
-      {/* Sidebar - Static & Always Rendered */}
+      {/* Sidebar - Responsive Drawer on Mobile, Inline on Desktop */}
       {sidebarOpen && (
-        <aside className="hidden w-60 shrink-0 flex-col border-r border-border/70 bg-card/50 p-3 md:flex">
-          {mounted && user ? (
+        <>
+          {/* Mobile backdrop */}
+          <div
+            className="fixed inset-0 z-40 bg-black/60 backdrop-blur-xs md:hidden"
+            onClick={() => setSidebarOpen(false)}
+          />
+          <aside className="fixed inset-y-0 left-0 z-50 flex h-dvh w-72 flex-col border-r border-border/80 bg-card p-3 shadow-2xl animate-in slide-in-from-left duration-200 md:static md:z-auto md:h-auto md:w-60 md:border-border/70 md:bg-card/50 md:shadow-none md:animate-none">
+            {/* Mobile Header with Close Button */}
+            <div className="mb-2 flex items-center justify-between pb-2 border-b border-border/60 md:hidden">
+              <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Navigation</span>
+              <button
+                type="button"
+                onClick={() => setSidebarOpen(false)}
+                className="rounded-lg p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition cursor-pointer"
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+            {mounted && user ? (
             <div className="mb-4 flex items-center justify-between gap-2 rounded-xl border border-border/70 bg-muted/30 p-2">
               <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground font-bold text-xs uppercase">
                 {user.name ? user.name.substring(0, 2) : 'US'}
@@ -796,6 +821,9 @@ export default function Page() {
 
           <button
             onClick={() => {
+              if (typeof window !== 'undefined' && window.innerWidth < 768) {
+                setSidebarOpen(false)
+              }
               if (accounts.length === 0) {
                 showError('No Connected Mailbox', 'Please connect an SMTP email account in settings first.')
                 setAccountsModalOpen(true)
@@ -959,7 +987,12 @@ export default function Page() {
                 return (
                   <button
                     key={label}
-                    onClick={() => setSelectedTag(isActive ? null : label)}
+                    onClick={() => {
+                      setSelectedTag(isActive ? null : label)
+                      if (typeof window !== 'undefined' && window.innerWidth < 768) {
+                        setSidebarOpen(false)
+                      }
+                    }}
                     className={cn(
                       'flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground cursor-pointer',
                       isActive && 'bg-primary/10 font-medium text-primary'
@@ -993,21 +1026,35 @@ export default function Page() {
             </div>
             <div className="flex items-center justify-between">
               <button
-                onClick={() => setAccountsModalOpen(true)}
-                className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold text-primary hover:bg-primary/10"
+                onClick={() => {
+                  if (typeof window !== 'undefined' && window.innerWidth < 768) {
+                    setSidebarOpen(false)
+                  }
+                  setAccountsModalOpen(true)
+                }}
+                className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold text-primary hover:bg-primary/10 cursor-pointer"
               >
                 <Server className="size-4" /> SMTP / IMAP Settings
               </button>
-              <IconButton label="Settings" onClick={() => setAccountsModalOpen(true)}>
+              <IconButton label="Settings" onClick={() => {
+                if (typeof window !== 'undefined' && window.innerWidth < 768) {
+                  setSidebarOpen(false)
+                }
+                setAccountsModalOpen(true)
+              }}>
                 <Settings />
               </IconButton>
             </div>
           </div>
         </aside>
+        </>
       )}
 
-      {/* Email List Column (Threaded View) */}
-      <section className="flex min-w-0 flex-1 flex-col border-r border-border/70 md:max-w-[390px]">
+      {/* Email List Column (Threaded View) - Hidden on mobile when thread is open */}
+      <section className={cn(
+        'min-w-0 flex-1 flex-col border-r border-border/70 lg:max-w-[390px]',
+        selectedThreadKey ? 'hidden lg:flex' : 'flex'
+      )}>
         {/* Static Header & Filter */}
         <header className="flex items-center gap-2 border-b border-border/70 p-3">
           <IconButton label="Toggle sidebar" onClick={() => setSidebarOpen(!sidebarOpen)}>
@@ -1163,7 +1210,10 @@ export default function Page() {
       </section>
 
       {/* Threaded Email Conversation Reader View */}
-      <section className="hidden min-w-0 flex-1 flex-col lg:flex">
+      <section className={cn(
+        'min-w-0 flex-1 flex-col',
+        selectedThreadKey ? 'flex' : 'hidden lg:flex'
+      )}>
         {syncing && !selectedThread && threads.length === 0 ? (
           <EmailReaderSkeleton />
         ) : selectedThread ? (
@@ -1361,7 +1411,7 @@ export default function Page() {
 
       {/* Compose Email Modal */}
       {composeOpen && (
-        <div className="fixed bottom-0 right-4 z-20 flex h-[min(620px,calc(100vh-2rem))] w-[min(580px,calc(100vw-2rem))] flex-col overflow-hidden rounded-t-2xl border border-border bg-card shadow-2xl">
+        <div className="fixed inset-x-0 bottom-0 sm:inset-x-auto sm:right-4 z-50 flex h-[min(620px,calc(100dvh-1rem))] sm:h-[min(620px,calc(100vh-2rem))] w-full sm:w-[580px] flex-col overflow-hidden rounded-t-2xl sm:rounded-2xl border border-border bg-card shadow-2xl">
           <form onSubmit={handleSendEmail} className="flex min-h-0 flex-1 flex-col">
             <header className="flex shrink-0 items-center gap-3 border-b border-border/70 bg-muted/30 px-4 py-3">
               <span className="text-sm font-semibold">New message</span>
