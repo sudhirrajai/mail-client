@@ -529,7 +529,7 @@ class ImapSyncService
     }
 
     /**
-     * Delete email permanently from remote IMAP server (mail.sudhirrajai.com)
+     * Delete email permanently from remote IMAP server
      */
     public function deleteFromRemoteImap(EmailAccount $account, Email $email): void
     {
@@ -542,7 +542,7 @@ class ImapSyncService
                 $encryption = strtolower($account->imap_encryption) === 'tls' || strtolower($account->imap_encryption) === 'ssl' ? '/ssl/novalidate-cert' : '/novalidate-cert';
                 $serverSpec = "{" . $host . ":" . $port . "/imap" . $encryption . "}INBOX";
 
-                $mbox = @imap_open($serverSpec, $account->imap_username, $account->imap_password);
+                $mbox = @imap_open($serverSpec, $account->imap_username, $account->decrypted_imap_password);
                 if ($mbox) {
                     @imap_delete($mbox, (string)$email->uid, FT_UID);
                     @imap_expunge($mbox);
@@ -568,7 +568,7 @@ class ImapSyncService
                 $encryption = strtolower($account->imap_encryption) === 'tls' || strtolower($account->imap_encryption) === 'ssl' ? '/ssl/novalidate-cert' : '/novalidate-cert';
                 $serverSpec = "{" . $host . ":" . $port . "/imap" . $encryption . "}INBOX";
 
-                $mbox = @imap_open($serverSpec, $account->imap_username, $account->imap_password);
+                $mbox = @imap_open($serverSpec, $account->imap_username, $account->decrypted_imap_password);
                 if ($mbox) {
                     $flag = '\\Seen';
                     if ($unread) {
@@ -598,7 +598,7 @@ class ImapSyncService
                 $encryption = strtolower($account->imap_encryption) === 'tls' || strtolower($account->imap_encryption) === 'ssl' ? '/ssl/novalidate-cert' : '/novalidate-cert';
                 $serverSpec = "{" . $host . ":" . $port . "/imap" . $encryption . "}INBOX";
 
-                $mbox = @imap_open($serverSpec, $account->imap_username, $account->imap_password);
+                $mbox = @imap_open($serverSpec, $account->imap_username, $account->decrypted_imap_password);
                 if ($mbox) {
                     $flag = '\\Flagged';
                     if ($starred) {
@@ -611,6 +611,94 @@ class ImapSyncService
             }
         } catch (Exception $e) {
             // Log remote IMAP flag update failure silently
+        }
+    }
+
+    /**
+     * Append a sent email message directly into the remote IMAP "Sent" mailbox
+     */
+    public function appendSentMessage(EmailAccount $account, string $rawMimeMessage): bool
+    {
+        try {
+            $host = $account->imap_host;
+            $port = (int) ($account->imap_port ?: 993);
+            $encryption = strtolower($account->imap_encryption ?? 'ssl');
+            $prefix = ($encryption === 'ssl' || $port == 993) ? 'ssl://' : ($encryption === 'tls' ? 'tls://' : '');
+            $username = $account->imap_username;
+            $password = $account->decrypted_imap_password;
+
+            $context = stream_context_create([
+                'ssl' => [
+                    'verify_peer' => false,
+                    'verify_peer_name' => false,
+                ]
+            ]);
+
+            $stream = @stream_socket_client(
+                $prefix . $host . ':' . $port,
+                $errno,
+                $errstr,
+                12,
+                STREAM_CLIENT_CONNECT,
+                $context
+            );
+
+            if (!$stream) {
+                return false;
+            }
+
+            fgets($stream, 512); // Banner
+
+            fputs($stream, "A001 LOGIN \"$username\" \"$password\"\r\n");
+            $loginRes = '';
+            while ($line = fgets($stream, 512)) {
+                $loginRes .= $line;
+                if (strpos($line, 'A001') === 0) break;
+            }
+
+            if (strpos($loginRes, 'A001 OK') === false) {
+                fclose($stream);
+                return false;
+            }
+
+            // Detect Sent folder name
+            fputs($stream, "A002 LIST \"\" \"*\"\r\n");
+            $listOutput = '';
+            while ($line = fgets($stream, 512)) {
+                $listOutput .= $line;
+                if (strpos($line, 'A002') === 0) break;
+            }
+
+            $sentFolder = 'Sent';
+            if (preg_match('/\* LIST \([^\)]*\\\\Sent[^\)]*\)\s+["\S]+\s+"?([^"\r\n]+)"?/i', $listOutput, $m)) {
+                $sentFolder = trim($m[1]);
+            } elseif (stripos($listOutput, 'Sent Items') !== false) {
+                $sentFolder = 'Sent Items';
+            } elseif (stripos($listOutput, '[Gmail]/Sent Mail') !== false) {
+                $sentFolder = '[Gmail]/Sent Mail';
+            } elseif (stripos($listOutput, 'INBOX.Sent') !== false) {
+                $sentFolder = 'INBOX.Sent';
+            }
+
+            $rawLen = strlen($rawMimeMessage);
+            fputs($stream, "A003 APPEND \"$sentFolder\" (\\Seen) {" . $rawLen . "}\r\n");
+            $readyResp = fgets($stream, 512);
+
+            if (strpos($readyResp, '+') === 0) {
+                fputs($stream, $rawMimeMessage . "\r\n");
+                $appendRes = '';
+                while ($line = fgets($stream, 512)) {
+                    $appendRes .= $line;
+                    if (strpos($line, 'A003') === 0) break;
+                }
+                fclose($stream);
+                return strpos($appendRes, 'A003 OK') !== false;
+            }
+
+            fclose($stream);
+            return false;
+        } catch (Exception $e) {
+            return false;
         }
     }
 }

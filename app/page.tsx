@@ -1136,7 +1136,7 @@ export default function Page() {
                     </div>
 
                     {/* Email Content Body */}
-                    <article className="prose prose-sm max-w-none dark:prose-invert overflow-x-auto text-foreground">
+                    <article className="rich-editor-content text-sm overflow-x-auto text-foreground leading-relaxed">
                       {msg.body_html ? (
                         <div dangerouslySetInnerHTML={{ __html: msg.body_html }} />
                       ) : (

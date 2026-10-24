@@ -14,7 +14,7 @@ class SmtpMailService
     /**
      * Send email dynamically using custom SMTP credentials
      */
-    public function send(EmailAccount $account, string $to, ?string $cc, ?string $bcc, string $subject, string $body, array $attachments = []): bool
+    public function send(EmailAccount $account, string $to, ?string $cc, ?string $bcc, string $subject, string $body, array $attachments = []): string
     {
         try {
             $host = $account->smtp_host;
@@ -57,7 +57,7 @@ class SmtpMailService
 
             $mailer->send($email);
 
-            return true;
+            return $email->toString();
         } catch (Exception $e) {
             throw new Exception("SMTP Send Failed: " . $e->getMessage());
         }

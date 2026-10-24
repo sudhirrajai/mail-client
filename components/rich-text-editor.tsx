@@ -77,7 +77,27 @@ export function RichTextEditor({
   }, [attachments, onAttachmentsChange])
 
   const exec = (command: string, val: string | undefined = undefined) => {
+    if (editorRef.current) {
+      editorRef.current.focus()
+    }
     document.execCommand(command, false, val)
+    if (editorRef.current) {
+      onChange(editorRef.current.innerHTML)
+    }
+  }
+
+  const formatBlock = (tag: string) => {
+    if (editorRef.current) {
+      editorRef.current.focus()
+    }
+    try {
+      const ok = document.execCommand('formatBlock', false, tag)
+      if (!ok) {
+        document.execCommand('formatBlock', false, `<${tag.toUpperCase()}>`)
+      }
+    } catch {
+      document.execCommand('formatBlock', false, `<${tag.toUpperCase()}>`)
+    }
     if (editorRef.current) {
       onChange(editorRef.current.innerHTML)
     }
@@ -243,6 +263,7 @@ export function RichTextEditor({
       <div className="shrink-0 flex flex-wrap items-center gap-1 border-b border-border/70 bg-muted/40 p-1.5">
         <button
           type="button"
+          onMouseDown={(e) => e.preventDefault()}
           onClick={() => exec('bold')}
           title="Bold"
           className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition"
@@ -251,6 +272,7 @@ export function RichTextEditor({
         </button>
         <button
           type="button"
+          onMouseDown={(e) => e.preventDefault()}
           onClick={() => exec('italic')}
           title="Italic"
           className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition"
@@ -259,6 +281,7 @@ export function RichTextEditor({
         </button>
         <button
           type="button"
+          onMouseDown={(e) => e.preventDefault()}
           onClick={() => exec('underline')}
           title="Underline"
           className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition"
@@ -267,6 +290,7 @@ export function RichTextEditor({
         </button>
         <button
           type="button"
+          onMouseDown={(e) => e.preventDefault()}
           onClick={() => exec('strikeThrough')}
           title="Strikethrough"
           className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition"
@@ -278,7 +302,8 @@ export function RichTextEditor({
 
         <button
           type="button"
-          onClick={() => exec('formatBlock', '<h1>')}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => formatBlock('h1')}
           title="Heading 1"
           className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition"
         >
@@ -286,7 +311,8 @@ export function RichTextEditor({
         </button>
         <button
           type="button"
-          onClick={() => exec('formatBlock', '<h2>')}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => formatBlock('h2')}
           title="Heading 2"
           className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition"
         >
@@ -294,6 +320,7 @@ export function RichTextEditor({
         </button>
         <button
           type="button"
+          onMouseDown={(e) => e.preventDefault()}
           onClick={() => exec('insertUnorderedList')}
           title="Bullet List"
           className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition"
@@ -302,6 +329,7 @@ export function RichTextEditor({
         </button>
         <button
           type="button"
+          onMouseDown={(e) => e.preventDefault()}
           onClick={() => exec('insertOrderedList')}
           title="Numbered List"
           className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition"
@@ -313,7 +341,8 @@ export function RichTextEditor({
 
         <button
           type="button"
-          onClick={() => exec('formatBlock', '<blockquote>')}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => formatBlock('blockquote')}
           title="Quote Block"
           className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition"
         >
@@ -321,6 +350,7 @@ export function RichTextEditor({
         </button>
         <button
           type="button"
+          onMouseDown={(e) => e.preventDefault()}
           onClick={promptLink}
           title="Insert Link"
           className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition"
@@ -331,6 +361,7 @@ export function RichTextEditor({
         {/* Attach File Button */}
         <button
           type="button"
+          onMouseDown={(e) => e.preventDefault()}
           onClick={() => fileInputRef.current?.click()}
           title="Attach PDF, Word, Excel, ZIP or files"
           className="rounded-lg p-1.5 text-primary bg-primary/10 hover:bg-primary/20 transition flex items-center gap-1 font-medium text-xs ml-1"
@@ -342,6 +373,7 @@ export function RichTextEditor({
         {/* Add Image Button */}
         <button
           type="button"
+          onMouseDown={(e) => e.preventDefault()}
           onClick={() => imageInputRef.current?.click()}
           title="Insert Image"
           className="rounded-lg p-1.5 text-sky-500 bg-sky-500/10 hover:bg-sky-500/20 transition flex items-center gap-1 font-medium text-xs"
@@ -352,6 +384,7 @@ export function RichTextEditor({
 
         <button
           type="button"
+          onMouseDown={(e) => e.preventDefault()}
           onClick={() => exec('removeFormat')}
           title="Clear Formatting"
           className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition ml-auto"
@@ -389,7 +422,7 @@ export function RichTextEditor({
           onDrop={handleDrop}
           onFocus={() => setIsFocused(true)}
           onBlur={() => setIsFocused(false)}
-          className="outline-none min-h-[140px] prose prose-sm max-w-none dark:prose-invert text-foreground"
+          className="rich-editor-content outline-none min-h-[140px] text-foreground"
         />
 
         {(!value || value === '<br>') && !isFocused && (

@@ -243,7 +243,7 @@ class EmailController extends Controller
             $attachments = $request->input('attachments', []);
 
             // Send via SMTP Service
-            $this->smtpService->send(
+            $rawMime = $this->smtpService->send(
                 $account,
                 $request->to,
                 $request->cc,
@@ -252,6 +252,15 @@ class EmailController extends Controller
                 $request->body,
                 $attachments
             );
+
+            // Append a copy to the remote IMAP "Sent" folder (cPanel / Roundcube / Dovecot)
+            if (!empty($rawMime) && !empty($account->imap_host)) {
+                try {
+                    $this->imapService->appendSentMessage($account, $rawMime);
+                } catch (\Throwable $imapEx) {
+                    \Illuminate\Support\Facades\Log::warning('IMAP Sent Append warning: ' . $imapEx->getMessage());
+                }
+            }
 
             // Record in Sent folder
             $initials = strtoupper(substr($request->user()->name ?? 'Me', 0, 2));
