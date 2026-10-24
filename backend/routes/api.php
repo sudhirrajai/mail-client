@@ -32,6 +32,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::prefix('emails')->group(function () {
         Route::get('/', [EmailController::class, 'index']);
         Route::post('/send', [EmailController::class, 'send']);
+        Route::post('/draft', [EmailController::class, 'saveDraft']);
         Route::get('/{id}', [EmailController::class, 'show']);
         Route::patch('/{id}/star', [EmailController::class, 'toggleStar']);
         Route::patch('/{id}/read', [EmailController::class, 'toggleRead']);

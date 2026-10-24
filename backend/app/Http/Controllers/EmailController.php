@@ -73,13 +73,22 @@ class EmailController extends Controller
             }
         }
 
+        if ($request->has('tag') && !empty($request->tag)) {
+            $tag = $request->tag;
+            $query->where(function ($tq) use ($tag) {
+                $tq->where('tags', 'like', "%\"{$tag}\"%")
+                    ->orWhere('tags', 'like', "%{$tag}%");
+            });
+        }
+
         if ($request->has('query') && !empty($request->query('query'))) {
             $q = $request->query('query');
             $query->where(function ($sub) use ($q) {
                 $sub->where('sender_name', 'like', "%{$q}%")
                     ->orWhere('sender_email', 'like', "%{$q}%")
                     ->orWhere('subject', 'like', "%{$q}%")
-                    ->orWhere('preview', 'like', "%{$q}%");
+                    ->orWhere('preview', 'like', "%{$q}%")
+                    ->orWhere('body_text', 'like', "%{$q}%");
             });
         }
 
@@ -99,9 +108,30 @@ class EmailController extends Controller
             ->where('unread', true)
             ->count();
 
+        $folderCounts = [
+            'Inbox' => $unreadCount,
+            'Starred' => Email::whereIn('email_account_id', $accountIds)->where('starred', true)->count(),
+            'Sent' => Email::whereIn('email_account_id', $accountIds)->where('folder', 'Sent')->count(),
+            'Drafts' => Email::whereIn('email_account_id', $accountIds)->where('folder', 'Drafts')->count(),
+            'Archive' => Email::whereIn('email_account_id', $accountIds)->where('folder', 'Archive')->count(),
+            'Spam' => Email::whereIn('email_account_id', $accountIds)->where('folder', 'Spam')->count(),
+            'Trash' => Email::whereIn('email_account_id', $accountIds)->where('folder', 'Trash')->count(),
+        ];
+
+        $totalEmailCount = Email::whereIn('email_account_id', $accountIds)->count();
+        $usedMb = round($totalEmailCount * 0.45, 1);
+        $storage = [
+            'used_mb' => $usedMb,
+            'total_gb' => 15,
+            'formatted' => "{$usedMb} MB / 15 GB",
+            'percentage' => max(1, min(100, round(($usedMb / (15 * 1024)) * 100))),
+        ];
+
         return response()->json([
             'emails' => $formattedEmails,
             'unread_count' => $unreadCount,
+            'folder_counts' => $folderCounts,
+            'storage' => $storage,
         ]);
     }
 
@@ -219,7 +249,9 @@ class EmailController extends Controller
                 $request->bcc,
                 $request->subject,
                 $request->body,
-                $attachments
+                $attachments,
+                $request->input('in_reply_to'),
+                $request->input('references')
             );
 
             // Append a copy to the remote IMAP "Sent" folder (cPanel / Roundcube / Dovecot)
@@ -236,17 +268,22 @@ class EmailController extends Controller
 
             $attachmentMeta = null;
             if (!empty($attachments)) {
-                $first = $attachments[0];
-                $type = 'pdf';
-                if (isset($first['mime_type'])) {
-                    if (strpos($first['mime_type'], 'image') !== false) $type = 'image';
-                    else if (strpos($first['mime_type'], 'zip') !== false || strpos($first['mime_type'], 'rar') !== false) $type = 'zip';
+                $parsedList = [];
+                foreach ($attachments as $att) {
+                    $type = 'pdf';
+                    if (isset($att['mime_type'])) {
+                        if (strpos($att['mime_type'], 'image') !== false) $type = 'image';
+                        else if (strpos($att['mime_type'], 'zip') !== false || strpos($att['mime_type'], 'rar') !== false) $type = 'zip';
+                    }
+                    $parsedList[] = [
+                        'name' => $att['name'] ?? 'attachment',
+                        'size' => $att['size'] ?? '1 MB',
+                        'type' => $type,
+                        'mime_type' => $att['mime_type'] ?? 'application/octet-stream',
+                        'content_base64' => $att['content_base64'] ?? null,
+                    ];
                 }
-                $attachmentMeta = [
-                    'name' => $first['name'] ?? 'attachment',
-                    'size' => $first['size'] ?? '1 MB',
-                    'type' => $type,
-                ];
+                $attachmentMeta = count($parsedList) === 1 ? $parsedList[0] : $parsedList;
             }
 
             $createdEmail = Email::create([
@@ -254,7 +291,7 @@ class EmailController extends Controller
                 'sender_name' => $account->name ?: $request->user()->name,
                 'sender_email' => $account->email_address,
                 'initials' => $initials,
-                'color' => 'bg-indigo-600',
+                'color' => ImapSyncService::generateAvatarColor($account->email_address),
                 'recipient_to' => $request->to,
                 'recipient_cc' => $request->cc,
                 'recipient_bcc' => $request->bcc,
@@ -266,7 +303,7 @@ class EmailController extends Controller
                 'folder' => 'Sent',
                 'unread' => false,
                 'starred' => false,
-                'tags' => ['Work'],
+                'tags' => ImapSyncService::detectEmailTags($request->subject, $account->email_address),
                 'attachment' => $attachmentMeta,
             ]);
 
@@ -280,6 +317,69 @@ class EmailController extends Controller
                 'message' => $e->getMessage()
             ], 500);
         }
+    }
+
+    public function saveDraft(Request $request)
+    {
+        $request->validate([
+            'account_id' => 'nullable',
+        ]);
+
+        $account = null;
+        if ($request->filled('account_id')) {
+            $account = $request->user()->emailAccounts()->find($request->account_id);
+        }
+        if (!$account) {
+            $account = $request->user()->emailAccounts()->where('is_default', true)->first()
+                ?? $request->user()->emailAccounts()->first();
+        }
+
+        if (!$account) {
+            return response()->json(['message' => 'No connected email account found.'], 422);
+        }
+
+        $id = $request->input('id');
+        $initials = strtoupper(substr($request->user()->name ?? 'Me', 0, 2));
+
+        $data = [
+            'email_account_id' => $account->id,
+            'sender_name' => $account->name ?: $request->user()->name,
+            'sender_email' => $account->email_address,
+            'initials' => $initials,
+            'color' => ImapSyncService::generateAvatarColor($account->email_address),
+            'recipient_to' => $request->to ?: '',
+            'recipient_cc' => $request->cc,
+            'recipient_bcc' => $request->bcc,
+            'subject' => $request->subject ?: '(Draft No Subject)',
+            'preview' => substr(strip_tags($request->body ?: ''), 0, 100),
+            'body_html' => $request->body ?: '',
+            'body_text' => strip_tags($request->body ?: ''),
+            'date_sent' => now(),
+            'folder' => 'Drafts',
+            'unread' => false,
+            'starred' => false,
+            'tags' => ImapSyncService::detectEmailTags($request->subject ?: '', $account->email_address),
+        ];
+
+        if ($id) {
+            $draft = Email::where('email_account_id', $account->id)->where('folder', 'Drafts')->find($id);
+            if ($draft) {
+                $draft->update($data);
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Draft updated successfully!',
+                    'email' => $this->formatEmail($draft),
+                ]);
+            }
+        }
+
+        $draft = Email::create($data);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Draft saved successfully!',
+            'email' => $this->formatEmail($draft),
+        ]);
     }
 
     private function formatEmail(Email $email): array

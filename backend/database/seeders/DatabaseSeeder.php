@@ -34,7 +34,7 @@ class DatabaseSeeder extends Seeder
             'smtp_username' => 'alex@work.com',
             'smtp_password' => 'demopassword',
             'is_default' => true,
-            'is_active' => true,
+            'is_active' => false,
         ]);
 
         $folders = [

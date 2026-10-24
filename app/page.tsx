@@ -4,45 +4,31 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   Archive,
-  ArchiveX,
-  Bell,
-  Bold,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   FileArchive,
-  FileCode2,
   FileImage,
   FileText,
-  Forward,
   Inbox,
-  Italic,
-  Link2,
-  List,
   Mail,
   Menu,
-  MoreHorizontal,
   Paperclip,
   PenLine,
   Plus,
-  Printer,
   RefreshCw,
   Reply,
-  ReplyAll,
   Search,
   Send,
   Settings,
   ShieldAlert,
   Star,
-  Tag,
   Trash2,
   User as UserIcon,
   X,
-  Zap,
   Loader2,
   Server,
   LogOut,
-  UserPlus,
   Layers,
   MessageSquare,
 } from 'lucide-react'
@@ -133,8 +119,34 @@ function IconButton({
   )
 }
 
-function AttachmentCard({ attachment }: { attachment: NonNullable<EmailItem['attachment']> }) {
-  const Icon = attachment.type === 'pdf' ? FileText : attachment.type === 'image' ? FileImage : FileArchive
+function AttachmentCard({ attachment }: { attachment: any }) {
+  const Icon = attachment?.type === 'pdf' ? FileText : attachment?.type === 'image' ? FileImage : FileArchive
+
+  const handleDownload = () => {
+    if (attachment.url) {
+      window.open(attachment.url, '_blank')
+      return
+    }
+    if (attachment.content_base64) {
+      const link = document.createElement('a')
+      link.href = `data:${attachment.mime_type || 'application/octet-stream'};base64,${attachment.content_base64}`
+      link.download = attachment.name || 'attachment'
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      return
+    }
+    const blob = new Blob([`Attachment file: ${attachment.name || 'document'}`], { type: 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = attachment.name || 'attachment.txt'
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+  }
+
   return (
     <div className="flex items-center gap-3 rounded-xl border border-border/70 bg-muted/30 p-3">
       <div className="flex size-10 items-center justify-center rounded-lg bg-background text-primary">
@@ -144,7 +156,13 @@ function AttachmentCard({ attachment }: { attachment: NonNullable<EmailItem['att
         <p className="truncate text-sm font-medium">{attachment.name}</p>
         <p className="text-xs text-muted-foreground">{attachment.size}</p>
       </div>
-      <button className="rounded-md px-2 py-1 text-xs font-medium text-primary hover:bg-primary/10">Download</button>
+      <button
+        type="button"
+        onClick={handleDownload}
+        className="rounded-md px-2.5 py-1 text-xs font-medium text-primary bg-primary/10 hover:bg-primary/20 transition cursor-pointer"
+      >
+        Download
+      </button>
     </div>
   )
 }
@@ -167,6 +185,12 @@ export default function Page() {
   const [selectedThreadKey, setSelectedThreadKey] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState('All')
+  const [selectedTag, setSelectedTag] = useState<string | null>(null)
+  const [folderCounts, setFolderCounts] = useState<Record<string, number>>({})
+  const [storageInfo, setStorageInfo] = useState<{ formatted: string; percentage: number }>({
+    formatted: '0 MB / 15 GB',
+    percentage: 2,
+  })
   const [reply, setReply] = useState('')
 
   const [initLoading, setInitLoading] = useState(true)
@@ -192,6 +216,8 @@ export default function Page() {
 
   // Compose State
   const composeFileInputRef = useRef<HTMLInputElement>(null)
+  const [draftId, setDraftId] = useState<number | undefined>(undefined)
+  const [savingDraft, setSavingDraft] = useState(false)
   const [composeTo, setComposeTo] = useState('')
   const [composeCc, setComposeCc] = useState('')
   const [composeSubject, setComposeSubject] = useState('')
@@ -374,24 +400,26 @@ export default function Page() {
     setSelectedThreadKey(null)
   }
 
-  const handleSync = async (notify = false, isBackground = false, targetFolder?: Folder, targetAccId?: number) => {
+  const handleSync = async (notify = false, isBackground = false, targetFolder?: Folder, targetAccId?: number, targetQuery?: string, targetTag?: string | null) => {
     if (!api.getToken()) return
 
     const activeFolder = targetFolder || currentFolderRef.current
     const activeAccId = targetAccId !== undefined ? targetAccId : currentAccountRef.current
+    const activeQuery = targetQuery !== undefined ? targetQuery : query
+    const activeTag = targetTag !== undefined ? targetTag : selectedTag
 
     if (isSyncingRef.current && !notify && !isBackground) return
 
-    const alreadyVisited = emailCache.has(activeAccId, activeFolder, query, filter)
+    const alreadyVisited = emailCache.has(activeAccId, activeFolder, activeQuery, filter)
 
     if (alreadyVisited && !notify) {
-      const cached = emailCache.get(activeAccId, activeFolder, query, filter)
+      const cached = emailCache.get(activeAccId, activeFolder, activeQuery, filter)
       if (cached) {
         setEmails(cached)
       }
       setSyncing(false)
 
-      if (emailCache.isValid(activeAccId, activeFolder, query, filter) && !isBackground) {
+      if (emailCache.isValid(activeAccId, activeFolder, activeQuery, filter) && !isBackground) {
         return
       }
     } else if (!alreadyVisited && !isBackground) {
@@ -407,10 +435,17 @@ export default function Page() {
         }
       }
 
-      const res = await api.getEmails(activeAccId, activeFolder, query, filter)
+      const res = await api.getEmails(activeAccId, activeFolder, activeQuery, filter, activeTag || undefined)
       const fetchedEmails = res.emails || []
 
-      emailCache.set(activeAccId, activeFolder, query, filter, fetchedEmails)
+      if (res.folder_counts) {
+        setFolderCounts(res.folder_counts)
+      }
+      if (res.storage) {
+        setStorageInfo(res.storage)
+      }
+
+      emailCache.set(activeAccId, activeFolder, activeQuery, filter, fetchedEmails)
 
       if (currentFolderRef.current === activeFolder) {
         setEmails(fetchedEmails)
@@ -425,6 +460,15 @@ export default function Page() {
       isSyncingRef.current = false
     }
   }
+
+  // Live search and tag filter debounced sync to query backend
+  useEffect(() => {
+    if (!mounted || !user) return
+    const timer = setTimeout(() => {
+      handleSync(false, true, currentFolderRef.current, currentAccountRef.current, query, selectedTag)
+    }, 350)
+    return () => clearTimeout(timer)
+  }, [query, selectedTag])
 
   // Gmail Style background auto-polling every 25 seconds
   useEffect(() => {
@@ -441,12 +485,13 @@ export default function Page() {
 
   const visibleEmails = useMemo(() => {
     return emails.filter((email) => {
-      const matchesQuery = `${email.sender_name} ${email.sender_email} ${email.subject} ${email.preview}`
+      const matchesQuery = !query || `${email.sender_name} ${email.sender_email} ${email.subject} ${email.preview}`
         .toLowerCase()
         .includes(query.toLowerCase())
-      return matchesQuery
+      const matchesTag = !selectedTag || (email.tags && email.tags.includes(selectedTag))
+      return matchesQuery && matchesTag
     })
-  }, [emails, query])
+  }, [emails, query, selectedTag])
 
   // Email Threading Conversation Grouping Logic
   const threads = useMemo<EmailThread[]>(() => {
@@ -542,6 +587,17 @@ export default function Page() {
   const unreadCount = emails.filter((email) => email.folder === 'Inbox' && email.unread).length
 
   const selectThread = async (thread: EmailThread) => {
+    if (thread.latestEmail.folder === 'Drafts') {
+      const d = thread.latestEmail
+      setDraftId(d.id)
+      setComposeTo(d.recipient_to || '')
+      setComposeCc(d.recipient_cc || '')
+      setComposeSubject(d.subject === '(Draft No Subject)' ? '' : d.subject)
+      setComposeBody(d.body_html || d.body_text || '')
+      setComposeOpen(true)
+      return
+    }
+
     setSelectedThreadKey(thread.threadKey)
     // Mark unread emails in thread as read and ensure full content is loaded
     thread.emails.forEach(async (email) => {
@@ -558,6 +614,16 @@ export default function Page() {
         } catch (e) {}
       }
     })
+  }
+
+  const handleToggleUnread = async (id: number, unread: boolean) => {
+    setEmails((current) => current.map((e) => (e.id === id ? { ...e, unread } : e)))
+    mailEventBus.emit('EMAIL_READ_TOGGLED', { emailId: id, unread })
+    try {
+      await api.markRead(id, unread)
+    } catch (e) {
+      console.error(e)
+    }
   }
 
   const toggleStar = async (id: number) => {
@@ -603,9 +669,40 @@ export default function Page() {
 
     try {
       await api.deleteEmail(id)
-      showSuccess('Email Deleted', 'Message moved to trash.')
+      if (currentFolderRef.current === 'Trash') {
+        showSuccess('Permanently Deleted', 'Message deleted permanently.')
+      } else {
+        showSuccess('Email Deleted', 'Message moved to trash.')
+      }
     } catch (err: any) {
       showError('Delete Failed', err.message || 'Could not delete message.')
+    }
+  }
+
+  const handleSaveDraft = async () => {
+    const accountId = selectedAccountId || (accounts.length > 0 ? accounts[0].id : undefined)
+    if (!accountId) {
+      showError('No Connected Mailbox', 'Please connect an email account first in Settings.')
+      return
+    }
+
+    setSavingDraft(true)
+    try {
+      const res = await api.saveDraft({
+        id: draftId,
+        account_id: accountId,
+        to: composeTo,
+        subject: composeSubject,
+        body: composeBody,
+      })
+      showSuccess('Draft Saved', res.message || 'Your draft has been saved.')
+      setDraftId(res.email.id)
+      setEmails((current) => [res.email, ...current.filter((e) => e.id !== res.email.id)])
+      emailCache.clear()
+    } catch (err: any) {
+      showError('Save Failed', err.message || 'Could not save draft.')
+    } finally {
+      setSavingDraft(false)
     }
   }
 
@@ -808,7 +905,7 @@ export default function Page() {
           <div className="flex flex-col gap-1">
             {Object.entries(folderIcons).map(([name, Icon]) => {
               const key = name as Folder
-              const count = key === 'Inbox' ? unreadCount : 0
+              const count = folderCounts[key] !== undefined ? folderCounts[key] : (key === 'Inbox' ? unreadCount : 0)
               return (
                 <button
                   key={name}
@@ -836,24 +933,48 @@ export default function Page() {
           </div>
 
           <div className="mt-7">
-            <p className="px-3 pb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Labels
-            </p>
+            <div className="flex items-center justify-between px-3 pb-2">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Labels
+              </p>
+              {selectedTag && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedTag(null)}
+                  className="text-[11px] text-primary hover:underline cursor-pointer"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
             <div className="flex flex-col gap-1">
               {[
                 ['Work', 'bg-sky-500'],
                 ['Personal', 'bg-emerald-500'],
                 ['Finance', 'bg-violet-500'],
                 ['Urgent', 'bg-red-500'],
-              ].map(([label, dot]) => (
-                <button
-                  key={label}
-                  className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
-                >
-                  <span className={cn('size-2 rounded-full', dot)} />
-                  {label}
-                </button>
-              ))}
+              ].map(([label, dot]) => {
+                const tagCount = emails.filter((e) => e.tags && e.tags.includes(label)).length
+                const isActive = selectedTag === label
+                return (
+                  <button
+                    key={label}
+                    onClick={() => setSelectedTag(isActive ? null : label)}
+                    className={cn(
+                      'flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground cursor-pointer',
+                      isActive && 'bg-primary/10 font-medium text-primary'
+                    )}
+                  >
+                    <span className={cn('size-2 rounded-full', dot)} />
+                    <span className="flex-1 text-left">{label}</span>
+                    {tagCount > 0 && (
+                      <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">
+                        {tagCount}
+                      </span>
+                    )}
+                  </button>
+                )
+              })}
             </div>
           </div>
 
@@ -861,10 +982,13 @@ export default function Page() {
             <div>
               <div className="mb-2 flex justify-between text-[11px] text-muted-foreground">
                 <span>Storage</span>
-                <span>4.2 GB / 15 GB</span>
+                <span>{storageInfo.formatted}</span>
               </div>
               <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-                <div className="h-full w-[28%] rounded-full bg-primary" />
+                <div
+                  className="h-full rounded-full bg-primary transition-all duration-300"
+                  style={{ width: `${storageInfo.percentage}%` }}
+                />
               </div>
             </div>
             <div className="flex items-center justify-between">
@@ -1082,6 +1206,14 @@ export default function Page() {
                     <Archive />
                   </IconButton>
                 )}
+                <IconButton
+                  label="Mark as unread"
+                  onClick={() => {
+                    selectedThread.emails.forEach((e) => handleToggleUnread(e.id, true))
+                  }}
+                >
+                  <Mail />
+                </IconButton>
                 {folder !== 'Trash' && (
                   <IconButton
                     label="Delete Thread"
@@ -1137,6 +1269,14 @@ export default function Page() {
                             </div>
                           </div>
                           <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => handleToggleUnread(msg.id, !msg.unread)}
+                              className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted"
+                              title={msg.unread ? "Mark as read" : "Mark as unread"}
+                            >
+                              <Mail className={cn('size-4', msg.unread && 'text-primary fill-primary/20')} />
+                            </button>
                             <button onClick={() => toggleStar(msg.id)} className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted">
                               <Star className={cn('size-4', msg.starred && 'fill-amber-400 text-amber-400')} />
                             </button>
@@ -1167,8 +1307,14 @@ export default function Page() {
 
                     {/* Attachments Card */}
                     {msg.attachment && (
-                      <div className="mt-6 border-t border-border/60 pt-4">
-                        <AttachmentCard attachment={msg.attachment} />
+                      <div className="mt-6 border-t border-border/60 pt-4 space-y-2">
+                        {Array.isArray(msg.attachment) ? (
+                          msg.attachment.map((att: any, idx: number) => (
+                            <AttachmentCard key={idx} attachment={att} />
+                          ))
+                        ) : (
+                          <AttachmentCard attachment={msg.attachment} />
+                        )}
                       </div>
                     )}
                   </div>
@@ -1220,7 +1366,13 @@ export default function Page() {
             <header className="flex shrink-0 items-center gap-3 border-b border-border/70 bg-muted/30 px-4 py-3">
               <span className="text-sm font-semibold">New message</span>
               <div className="ml-auto flex items-center gap-1">
-                <IconButton label="Close" onClick={() => setComposeOpen(false)}>
+                <IconButton
+                  label="Close"
+                  onClick={() => {
+                    setComposeOpen(false)
+                    setDraftId(undefined)
+                  }}
+                >
                   <X />
                 </IconButton>
               </div>
@@ -1266,14 +1418,22 @@ export default function Page() {
                 className="h-full flex-1 min-h-0"
               />
             </div>
-            <footer className="flex shrink-0 items-center gap-1 border-t border-border/70 px-4 py-3">
+            <footer className="flex shrink-0 items-center gap-2 border-t border-border/70 px-4 py-3">
               <button
                 type="submit"
                 disabled={sending}
-                className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50 cursor-pointer"
               >
                 {sending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
                 Send
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveDraft}
+                disabled={savingDraft || sending}
+                className="rounded-lg border border-border/80 px-3 py-2 text-xs font-medium text-foreground hover:bg-muted transition cursor-pointer"
+              >
+                {savingDraft ? 'Saving...' : 'Save Draft'}
               </button>
               <IconButton label="Attach file" onClick={() => composeFileInputRef.current?.click()}>
                 <Paperclip />
@@ -1285,7 +1445,18 @@ export default function Page() {
                 className="hidden"
                 onChange={handleComposeFileSelect}
               />
-              <IconButton label="Discard draft" onClick={() => setComposeOpen(false)}>
+              <IconButton
+                label="Discard draft"
+                onClick={() => {
+                  setComposeOpen(false)
+                  setDraftId(undefined)
+                  setComposeTo('')
+                  setComposeCc('')
+                  setComposeSubject('')
+                  setComposeBody('')
+                  setComposeAttachments([])
+                }}
+              >
                 <Trash2 />
               </IconButton>
             </footer>

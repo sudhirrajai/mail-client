@@ -1,4 +1,4 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001/api'
+const API_URL = process.env.NEXT_PUBLIC_API_URL || (typeof window !== 'undefined' ? '/api' : 'http://localhost:8001/api')
 
 export interface User {
   id: number
@@ -176,15 +176,21 @@ class ApiClient {
   }
 
   // Emails API
-  async getEmails(accountId?: number, folder?: string, query?: string, filter?: string) {
+  async getEmails(accountId?: number, folder?: string, query?: string, filter?: string, tag?: string) {
     const params = new URLSearchParams()
     if (accountId) params.append('account_id', accountId.toString())
     if (folder) params.append('folder', folder)
     if (query) params.append('query', query)
     if (filter) params.append('filter', filter)
+    if (tag) params.append('tag', tag)
 
     const queryString = params.toString() ? `?${params.toString()}` : ''
-    return this.request<{ emails: EmailItem[]; unread_count: number }>(`/emails${queryString}`)
+    return this.request<{
+      emails: EmailItem[]
+      unread_count: number
+      folder_counts?: Record<string, number>
+      storage?: { formatted: string; percentage: number }
+    }>(`/emails${queryString}`)
   }
 
   async getEmail(id: number) {
@@ -224,6 +230,8 @@ class ApiClient {
     bcc?: string
     subject: string
     body: string
+    in_reply_to?: string
+    references?: string
     attachments?: Array<{
       name: string
       size: string
@@ -232,6 +240,19 @@ class ApiClient {
     }>
   }) {
     return this.request<{ success: boolean; message: string; email?: EmailItem }>('/emails/send', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async saveDraft(data: {
+    id?: number
+    account_id: number
+    to?: string
+    subject?: string
+    body?: string
+  }) {
+    return this.request<{ success: boolean; message: string; email: EmailItem }>('/emails/draft', {
       method: 'POST',
       body: JSON.stringify(data),
     })

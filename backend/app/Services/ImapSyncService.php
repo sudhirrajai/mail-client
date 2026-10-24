@@ -152,13 +152,31 @@ class ImapSyncService
             $decoded = $rawBody;
         }
 
+        $attachments = [];
         // Extract boundary if multipart
         if (preg_match('/boundary="?([^"\r\n]+)"?/i', $rawBody, $bMatches)) {
             $boundary = $bMatches[1];
             $parts = explode('--' . $boundary, $rawBody);
 
             foreach ($parts as $part) {
-                if (preg_match('/Content-Type:\s*text\/html/i', $part)) {
+                if (preg_match('/Content-Disposition:\s*attachment/i', $part) || preg_match('/filename="?([^";\r\n]+)"?/i', $part, $fnMatch)) {
+                    $filename = isset($fnMatch[1]) ? trim($fnMatch[1]) : 'attachment';
+                    $type = 'pdf';
+                    if (preg_match('/\.(jpg|jpeg|png|gif|webp|svg)$/i', $filename)) $type = 'image';
+                    elseif (preg_match('/\.(zip|rar|tar|gz|7z)$/i', $filename)) $type = 'zip';
+
+                    $bodyContent = preg_replace('/^[\s\S]*?\r\n\r\n/', '', $part);
+                    $bodyContent = trim(preg_replace('/--[\s\S]*$/', '', $bodyContent));
+                    $sizeBytes = strlen($bodyContent);
+                    $size = $sizeBytes < 1024 ? $sizeBytes . ' B' : ($sizeBytes < 1048576 ? round($sizeBytes / 1024, 1) . ' KB' : round($sizeBytes / 1048576, 1) . ' MB');
+
+                    $attachments[] = [
+                        'name' => $filename,
+                        'size' => $size,
+                        'type' => $type,
+                        'content_base64' => preg_match('/Content-Transfer-Encoding:\s*base64/i', $part) ? $bodyContent : base64_encode($bodyContent),
+                    ];
+                } elseif (preg_match('/Content-Type:\s*text\/html/i', $part)) {
                     $bodyContent = preg_replace('/^[\s\S]*?\r\n\r\n/', '', $part);
                     if (preg_match('/Content-Transfer-Encoding:\s*base64/i', $part)) {
                         $bodyContent = base64_decode(trim($bodyContent));
@@ -194,6 +212,7 @@ class ImapSyncService
         return [
             'html' => $htmlBody ?: "<p>" . nl2br(e($textBody)) . "</p>",
             'text' => $textBody,
+            'attachment' => !empty($attachments) ? (count($attachments) === 1 ? $attachments[0] : $attachments) : null,
         ];
     }
 
@@ -404,9 +423,28 @@ class ImapSyncService
                 }
 
                 if (strpos($loginRes, 'A001 OK') !== false) {
+                    // Dynamic Sent Folder Detection across providers (Gmail, Outlook, Dovecot, etc.)
+                    fputs($stream, "A003 LIST \"\" \"*\"\r\n");
+                    $listOutput = '';
+                    while ($line = fgets($stream, 512)) {
+                        $listOutput .= $line;
+                        if (strpos($line, 'A003') === 0) break;
+                    }
+
+                    $sentRemoteFolder = 'Sent';
+                    if (preg_match('/\* LIST \([^\)]*\\\\Sent[^\)]*\)\s+["\S]+\s+"?([^"\r\n]+)"?/i', $listOutput, $m)) {
+                        $sentRemoteFolder = trim($m[1]);
+                    } elseif (stripos($listOutput, 'Sent Items') !== false) {
+                        $sentRemoteFolder = 'Sent Items';
+                    } elseif (stripos($listOutput, '[Gmail]/Sent Mail') !== false) {
+                        $sentRemoteFolder = '[Gmail]/Sent Mail';
+                    } elseif (stripos($listOutput, 'INBOX.Sent') !== false) {
+                        $sentRemoteFolder = 'INBOX.Sent';
+                    }
+
                     $syncFolders = [
-                        ['command' => "A002 SELECT INBOX\r\n", 'tag' => 'A002', 'folder_name' => 'Inbox', 'model' => $inboxFolder],
-                        ['command' => "A004 SELECT Sent\r\n", 'tag' => 'A004', 'folder_name' => 'Sent', 'model' => $sentFolder],
+                        ['command' => "A002 SELECT \"INBOX\"\r\n", 'tag' => 'A002', 'folder_name' => 'Inbox', 'model' => $inboxFolder],
+                        ['command' => "A004 SELECT \"$sentRemoteFolder\"\r\n", 'tag' => 'A004', 'folder_name' => 'Sent', 'model' => $sentFolder],
                     ];
 
                     foreach ($syncFolders as $sf) {
@@ -461,6 +499,7 @@ class ImapSyncService
                                 $parsedBody = $this->parseMimeBody($rawMsgData);
                                 $bodyHtml = $parsedBody['html'];
                                 $bodyText = $parsedBody['text'];
+                                $attachment = $parsedBody['attachment'] ?? null;
 
                                 $existingEmail = Email::where('email_account_id', $account->id)
                                     ->where('subject', $subject)
@@ -472,6 +511,7 @@ class ImapSyncService
                                             'body_html' => $bodyHtml,
                                             'body_text' => $bodyText,
                                             'preview' => substr($bodyText ?: $subject, 0, 120),
+                                            'attachment' => $attachment ?: $existingEmail->attachment,
                                         ]);
                                     }
                                 } else {
@@ -481,7 +521,7 @@ class ImapSyncService
                                         'sender_name' => $from,
                                         'sender_email' => $senderEmail,
                                         'initials' => $initials,
-                                        'color' => 'bg-emerald-600',
+                                        'color' => self::generateAvatarColor($senderEmail),
                                         'recipient_to' => $account->email_address,
                                         'subject' => $subject,
                                         'preview' => substr($bodyText ?: $subject, 0, 120),
@@ -491,7 +531,8 @@ class ImapSyncService
                                         'folder' => $sf['folder_name'],
                                         'unread' => ($sf['folder_name'] === 'Inbox'),
                                         'starred' => false,
-                                        'tags' => ['Work'],
+                                        'tags' => self::detectEmailTags($subject, $senderEmail),
+                                        'attachment' => $attachment,
                                     ]);
                                     $fetchedCount++;
                                 }
@@ -548,6 +589,11 @@ class ImapSyncService
                     @imap_expunge($mbox);
                     @imap_close($mbox);
                 }
+            } else {
+                $this->sendSocketImapCommand($account, 'INBOX', [
+                    "UID STORE {$email->uid} +FLAGS (\\Deleted)",
+                    "EXPUNGE"
+                ]);
             }
         } catch (Exception $e) {
             // Log remote IMAP deletion failure silently
@@ -578,6 +624,11 @@ class ImapSyncService
                     }
                     @imap_close($mbox);
                 }
+            } else {
+                $action = $unread ? "-FLAGS (\\Seen)" : "+FLAGS (\\Seen)";
+                $this->sendSocketImapCommand($account, 'INBOX', [
+                    "UID STORE {$email->uid} $action"
+                ]);
             }
         } catch (Exception $e) {
             // Log remote IMAP flag update failure silently
@@ -608,10 +659,113 @@ class ImapSyncService
                     }
                     @imap_close($mbox);
                 }
+            } else {
+                $action = $starred ? "+FLAGS (\\Flagged)" : "-FLAGS (\\Flagged)";
+                $this->sendSocketImapCommand($account, 'INBOX', [
+                    "UID STORE {$email->uid} $action"
+                ]);
             }
         } catch (Exception $e) {
             // Log remote IMAP flag update failure silently
         }
+    }
+
+    /**
+     * Send arbitrary IMAP commands over secure socket stream
+     */
+    public function sendSocketImapCommand(EmailAccount $account, string $folder, array $commands): bool
+    {
+        try {
+            $host = $account->imap_host;
+            $port = (int) ($account->imap_port ?: 993);
+            $encryption = strtolower($account->imap_encryption ?? 'ssl');
+            $prefix = ($encryption === 'ssl' || $port == 993) ? 'ssl://' : ($encryption === 'tls' ? 'tls://' : '');
+            $username = $account->imap_username;
+            $password = $account->decrypted_imap_password;
+
+            $context = stream_context_create([
+                'ssl' => [
+                    'verify_peer' => false,
+                    'verify_peer_name' => false,
+                ]
+            ]);
+
+            $stream = @stream_socket_client(
+                $prefix . $host . ':' . $port,
+                $errno,
+                $errstr,
+                10,
+                STREAM_CLIENT_CONNECT,
+                $context
+            );
+
+            if (!$stream) return false;
+
+            fgets($stream, 512); // Banner
+
+            fputs($stream, "A001 LOGIN \"$username\" \"$password\"\r\n");
+            while ($line = fgets($stream, 512)) {
+                if (strpos($line, 'A001') === 0) break;
+            }
+
+            fputs($stream, "A002 SELECT \"$folder\"\r\n");
+            while ($line = fgets($stream, 512)) {
+                if (strpos($line, 'A002') === 0) break;
+            }
+
+            $tagIndex = 3;
+            foreach ($commands as $cmd) {
+                $tag = 'A' . str_pad((string)$tagIndex++, 3, '0', STR_PAD_LEFT);
+                fputs($stream, "$tag $cmd\r\n");
+                while ($line = fgets($stream, 512)) {
+                    if (strpos($line, $tag) === 0) break;
+                }
+            }
+
+            fputs($stream, "A999 LOGOUT\r\n");
+            fclose($stream);
+            return true;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /**
+     * Deterministically generate vibrant avatar color from email address
+     */
+    public static function generateAvatarColor(?string $seed): string
+    {
+        $colors = [
+            'bg-indigo-600',
+            'bg-sky-600',
+            'bg-emerald-600',
+            'bg-violet-600',
+            'bg-amber-600',
+            'bg-rose-600',
+            'bg-teal-600',
+            'bg-cyan-600',
+            'bg-fuchsia-600',
+        ];
+        $hash = crc32(strtolower(trim($seed ?: 'default')));
+        return $colors[abs($hash) % count($colors)];
+    }
+
+    /**
+     * Intelligent category tag detection
+     */
+    public static function detectEmailTags(string $subject, string $senderEmail): array
+    {
+        $lower = strtolower($subject . ' ' . $senderEmail);
+        if (preg_match('/(urgent|asap|priority|important|action required)/i', $lower)) {
+            return ['Urgent'];
+        }
+        if (preg_match('/(invoice|payment|receipt|billing|bank|salary|tax|statement)/i', $lower)) {
+            return ['Finance'];
+        }
+        if (preg_match('/@(gmail\.com|yahoo\.com|outlook\.com|hotmail\.com|icloud\.com)$/i', $senderEmail)) {
+            return ['Personal'];
+        }
+        return ['Work'];
     }
 
     /**

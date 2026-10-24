@@ -14,7 +14,17 @@ class SmtpMailService
     /**
      * Send email dynamically using custom SMTP credentials
      */
-    public function send(EmailAccount $account, string $to, ?string $cc, ?string $bcc, string $subject, string $body, array $attachments = []): string
+    public function send(
+        EmailAccount $account,
+        string $to,
+        ?string $cc,
+        ?string $bcc,
+        string $subject,
+        string $body,
+        array $attachments = [],
+        ?string $inReplyTo = null,
+        ?string $references = null
+    ): string
     {
         try {
             $host = $account->smtp_host;
@@ -44,6 +54,14 @@ class SmtpMailService
                 $email->bcc($bcc);
             }
 
+            if (!empty($inReplyTo)) {
+                $email->getHeaders()->addTextHeader('In-Reply-To', $inReplyTo);
+            }
+
+            if (!empty($references)) {
+                $email->getHeaders()->addTextHeader('References', $references);
+            }
+
             if (!empty($attachments)) {
                 foreach ($attachments as $att) {
                     if (!empty($att['content_base64'])) {
@@ -64,34 +82,30 @@ class SmtpMailService
     }
 
     /**
-     * Test SMTP connection
+     * Test SMTP connection and authentication
      */
     public function testConnection(array $config): array
     {
         try {
-            $host = $config['smtp_host'];
-            $port = (int) $config['smtp_port'];
+            $host = $config['smtp_host'] ?? '';
+            $port = (int) ($config['smtp_port'] ?? 465);
             $encryption = strtolower($config['smtp_encryption'] ?? 'ssl');
-            $scheme = ($encryption === 'ssl' || $port == 465) ? 'ssl://' : '';
+            $isSsl = ($encryption === 'ssl' || $port === 465);
+            $username = $config['smtp_username'] ?? '';
+            $password = $config['smtp_password'] ?? '';
 
-            $socket = @fsockopen($scheme . $host, $port, $errno, $errstr, 8);
-            if (!$socket) {
-                return ['success' => false, 'message' => "SMTP Connection failed to $host:$port — $errstr ($errno)"];
+            $transport = new EsmtpTransport($host, $port, $isSsl);
+            if (!empty($username)) {
+                $transport->setUsername($username);
+                $transport->setPassword($password);
             }
 
-            $response = fgets($socket, 512);
-            if (strpos($response, '220') !== 0) {
-                fclose($socket);
-                return ['success' => false, 'message' => "SMTP Server banner error: $response"];
-            }
+            $transport->start();
+            $transport->stop();
 
-            fputs($socket, "EHLO webmail.client\r\n");
-            $ehloRes = fgets($socket, 512);
-            fclose($socket);
-
-            return ['success' => true, 'message' => 'SMTP Host & Port reachable successfully!'];
+            return ['success' => true, 'message' => 'SMTP Host connected & credentials authenticated successfully!'];
         } catch (Exception $e) {
-            return ['success' => false, 'message' => 'SMTP Connection Error: ' . $e->getMessage()];
+            return ['success' => false, 'message' => 'SMTP Authentication/Connection Error: ' . $e->getMessage()];
         }
     }
 }
