@@ -23,7 +23,7 @@ export default function RegisterPage() {
     if (token) {
       api.getMe().then((res) => {
         if (res) {
-          router.replace('/')
+          router.replace('/mail')
         } else {
           setCheckingAuth(false)
         }
@@ -40,7 +40,7 @@ export default function RegisterPage() {
     try {
       const res = await api.register(name, email, password)
       showSuccess('Account Created', `Welcome to Mosaic Mail, ${res.user.name}!`)
-      router.replace('/')
+      router.replace('/mail')
     } catch (err: any) {
       showError('Registration Failed', err.message || 'Could not register user account.')
     } finally {

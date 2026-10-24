@@ -16,6 +16,14 @@ class User extends Authenticatable
         'name',
         'email',
         'password',
+        'role',
+        'is_admin',
+        'plan',
+        'status',
+        'max_storage_mb',
+        'max_accounts',
+        'ai_credits_monthly',
+        'ai_credits_remaining',
     ];
 
     protected $hidden = [
@@ -28,11 +36,31 @@ class User extends Authenticatable
         return [
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
+            'is_admin' => 'boolean',
+            'max_storage_mb' => 'integer',
+            'max_accounts' => 'integer',
+            'ai_credits_monthly' => 'integer',
+            'ai_credits_remaining' => 'integer',
         ];
     }
 
     public function emailAccounts()
     {
         return $this->hasMany(EmailAccount::class);
+    }
+
+    public function isAdmin(): bool
+    {
+        return (bool) $this->is_admin || $this->role === 'admin';
+    }
+
+    public function isSuspended(): bool
+    {
+        return $this->status === 'suspended';
+    }
+
+    public function canAddAccount(): bool
+    {
+        return $this->emailAccounts()->count() < $this->max_accounts;
     }
 }

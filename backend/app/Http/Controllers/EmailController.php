@@ -92,12 +92,36 @@ class EmailController extends Controller
             });
         }
 
-        $emails = $query->select([
-            'id', 'email_account_id', 'sender_name', 'sender_email',
-            'recipient_to', 'recipient_cc', 'recipient_bcc',
-            'initials', 'color', 'subject', 'preview', 'body_html', 'body_text', 'date_sent',
-            'folder', 'unread', 'starred', 'tags', 'attachment'
-        ])->orderBy('date_sent', 'desc')->orderBy('id', 'desc')->get();
+        $page = $request->has('page') ? max(1, (int) $request->input('page')) : null;
+        $perPage = (int) $request->input('per_page', 15);
+        $totalEmailsCount = $query->count();
+        $hasMore = false;
+
+        if ($page !== null) {
+            $emails = $query->select([
+                'id', 'email_account_id', 'sender_name', 'sender_email',
+                'recipient_to', 'recipient_cc', 'recipient_bcc',
+                'initials', 'color', 'subject', 'preview', 'body_html', 'body_text', 'date_sent',
+                'folder', 'unread', 'starred', 'tags', 'attachment'
+            ])
+            ->orderBy('date_sent', 'desc')
+            ->orderBy('id', 'desc')
+            ->skip(($page - 1) * $perPage)
+            ->take($perPage)
+            ->get();
+
+            $hasMore = ($page * $perPage) < $totalEmailsCount;
+        } else {
+            $emails = $query->select([
+                'id', 'email_account_id', 'sender_name', 'sender_email',
+                'recipient_to', 'recipient_cc', 'recipient_bcc',
+                'initials', 'color', 'subject', 'preview', 'body_html', 'body_text', 'date_sent',
+                'folder', 'unread', 'starred', 'tags', 'attachment'
+            ])
+            ->orderBy('date_sent', 'desc')
+            ->orderBy('id', 'desc')
+            ->get();
+        }
 
         $formattedEmails = $emails->map(function ($email) {
             return $this->formatEmail($email);
@@ -160,6 +184,9 @@ class EmailController extends Controller
             'unread_count' => $unreadCount,
             'folder_counts' => $folderCounts,
             'storage' => $storage,
+            'total' => $totalEmailsCount,
+            'page' => $page ?: 1,
+            'has_more' => $hasMore,
         ]);
     }
 
@@ -246,6 +273,109 @@ class EmailController extends Controller
         }
 
         return response()->json(['success' => true]);
+    }
+
+    public function bulkRead(Request $request)
+    {
+        $request->validate([
+            'ids' => 'required|array',
+            'ids.*' => 'integer',
+            'unread' => 'required|boolean',
+        ]);
+
+        $user = $request->user();
+        $accountIds = $user->emailAccounts()->pluck('id')->toArray();
+        $emails = Email::whereIn('email_account_id', $accountIds)->whereIn('id', $request->ids)->get();
+
+        $unread = $request->boolean('unread');
+        foreach ($emails as $email) {
+            $email->update(['unread' => $unread]);
+            if ($email->emailAccount) {
+                try {
+                    $this->imapService->markReadOnRemoteImap($email->emailAccount, $email, $unread);
+                } catch (\Exception $e) {}
+            }
+        }
+
+        return response()->json(['success' => true, 'count' => $emails->count(), 'unread' => $unread]);
+    }
+
+    public function bulkDelete(Request $request)
+    {
+        $request->validate([
+            'ids' => 'required|array',
+            'ids.*' => 'integer',
+        ]);
+
+        $user = $request->user();
+        $accountIds = $user->emailAccounts()->pluck('id')->toArray();
+        $emails = Email::whereIn('email_account_id', $accountIds)->whereIn('id', $request->ids)->get();
+
+        foreach ($emails as $email) {
+            if ($email->emailAccount) {
+                try {
+                    $this->imapService->deleteFromRemoteImap($email->emailAccount, $email);
+                } catch (\Exception $e) {}
+            }
+            if ($email->folder === 'Trash') {
+                $email->update(['folder' => 'DeletedPermanently']);
+            } else {
+                $email->update(['folder' => 'Trash']);
+            }
+        }
+
+        return response()->json(['success' => true, 'count' => $emails->count()]);
+    }
+
+    public function bulkMoveToFolder(Request $request)
+    {
+        $request->validate([
+            'ids' => 'required|array',
+            'ids.*' => 'integer',
+            'folder' => 'required|string|in:Inbox,Starred,Sent,Drafts,Archive,Spam,Trash',
+        ]);
+
+        $user = $request->user();
+        $accountIds = $user->emailAccounts()->pluck('id')->toArray();
+        $emails = Email::whereIn('email_account_id', $accountIds)->whereIn('id', $request->ids)->get();
+        $targetFolder = $request->folder;
+
+        foreach ($emails as $email) {
+            $oldFolder = $email->folder;
+            $email->update(['folder' => $targetFolder]);
+            if ($email->emailAccount && $oldFolder !== $targetFolder) {
+                try {
+                    $this->imapService->moveEmailOnRemoteImap($email->emailAccount, $email, $targetFolder);
+                } catch (\Exception $e) {}
+            }
+        }
+
+        return response()->json(['success' => true, 'count' => $emails->count(), 'folder' => $targetFolder]);
+    }
+
+    public function bulkStar(Request $request)
+    {
+        $request->validate([
+            'ids' => 'required|array',
+            'ids.*' => 'integer',
+            'starred' => 'required|boolean',
+        ]);
+
+        $user = $request->user();
+        $accountIds = $user->emailAccounts()->pluck('id')->toArray();
+        $emails = Email::whereIn('email_account_id', $accountIds)->whereIn('id', $request->ids)->get();
+        $starred = $request->boolean('starred');
+
+        foreach ($emails as $email) {
+            $email->update(['starred' => $starred]);
+            if ($email->emailAccount) {
+                try {
+                    $this->imapService->markStarredOnRemoteImap($email->emailAccount, $email, $starred);
+                } catch (\Exception $e) {}
+            }
+        }
+
+        return response()->json(['success' => true, 'count' => $emails->count(), 'starred' => $starred]);
     }
 
     public function send(Request $request)

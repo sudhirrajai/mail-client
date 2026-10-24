@@ -100,23 +100,28 @@ class ImapSyncService
             $text = quoted_printable_decode($text);
         }
 
-        return trim(strip_tags($text));
+        return trim($text);
     }
 
     private function cleanSender(string $rawFrom, string $fallbackEmail): array
     {
-        $rawFrom = $this->decodeMimeHeader($rawFrom);
+        $rawFrom = trim($rawFrom);
         $name = '';
-        $email = $fallbackEmail;
+        $email = '';
 
         if (preg_match('/(.*?)<([^>]+)>/', $rawFrom, $matches)) {
-            $name = trim($matches[1], '"\' ');
+            $name = trim($this->decodeMimeHeader(trim($matches[1])), '"\' ');
             $email = trim($matches[2]);
         } elseif (filter_var($rawFrom, FILTER_VALIDATE_EMAIL)) {
-            $name = explode('@', $rawFrom)[0];
             $email = $rawFrom;
+            $name = explode('@', $rawFrom)[0];
         } else {
-            $name = $rawFrom;
+            $name = $this->decodeMimeHeader($rawFrom);
+            if (preg_match('/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/', $rawFrom, $em)) {
+                $email = $em[0];
+            } else {
+                $email = $fallbackEmail;
+            }
         }
 
         $name = strip_tags($name);
@@ -333,7 +338,7 @@ class ImapSyncService
                     if ($mbox) {
                         $numMsgs = imap_num_msg($mbox);
                         if ($numMsgs > 0) {
-                            $start = max(1, $numMsgs - 25);
+                            $start = max(1, $numMsgs - 100);
                             for ($i = $numMsgs; $i >= $start; $i--) {
                                 $header = imap_headerinfo($mbox, $i);
                                 $uid = imap_uid($mbox, $i);
@@ -341,11 +346,16 @@ class ImapSyncService
                                 $rawFrom = isset($header->from[0]->personal) ? $header->from[0]->personal : '';
                                 $fallbackEmail = isset($header->from[0]->mailbox) && isset($header->from[0]->host)
                                     ? $header->from[0]->mailbox . '@' . $header->from[0]->host
-                                    : $username;
+                                    : ($targetInfo['folder_name'] === 'Sent' ? $account->email_address : $username);
 
-                                [$from, $senderEmail] = $this->cleanSender($rawFrom ?: $fallbackEmail, $fallbackEmail);
+                                $fromFormatted = !empty($rawFrom) && !empty($fallbackEmail) ? "$rawFrom <$fallbackEmail>" : ($rawFrom ?: $fallbackEmail);
+                                [$from, $senderEmail] = $this->cleanSender($fromFormatted, $fallbackEmail);
                                 $subject = isset($header->subject) ? $this->decodeMimeHeader($header->subject) : '(No Subject)';
                                 $dateStr = isset($header->date) ? Carbon::parse($header->date) : now();
+
+                                $toEmail = isset($header->to[0]->mailbox) && isset($header->to[0]->host)
+                                    ? $header->to[0]->mailbox . '@' . $header->to[0]->host
+                                    : $account->email_address;
 
                                 $bodyParsed = $this->fetchExtImapBody($mbox, $i);
                                 $bodyText = $bodyParsed['text'];
@@ -365,13 +375,14 @@ class ImapSyncService
 
                                 if ($existingEmail) {
                                     // Update existing placeholder with full body if missing
-                                    if (strpos($existingEmail->body_html, 'Message synced via IMAP socket.') !== false || strlen($existingEmail->body_html) < 200) {
-                                        $existingEmail->update([
-                                            'body_html' => $bodyHtml,
-                                            'body_text' => $bodyText,
-                                            'preview' => substr($bodyText ?: $subject, 0, 120),
-                                        ]);
-                                    }
+                                    $existingEmail->update([
+                                        'sender_name' => $from,
+                                        'sender_email' => $senderEmail,
+                                        'recipient_to' => $toEmail,
+                                        'body_html' => $bodyHtml,
+                                        'body_text' => $bodyText,
+                                        'preview' => substr($bodyText ?: $subject, 0, 120),
+                                    ]);
                                 } else {
                                     Email::create([
                                         'email_account_id' => $account->id,
@@ -381,7 +392,7 @@ class ImapSyncService
                                         'sender_email' => $senderEmail,
                                         'initials' => $initials,
                                         'color' => 'bg-emerald-600',
-                                        'recipient_to' => $account->email_address,
+                                        'recipient_to' => $toEmail,
                                         'subject' => $subject,
                                         'preview' => substr($bodyText ?: $subject, 0, 120),
                                         'body_html' => $bodyHtml,
@@ -493,7 +504,8 @@ class ImapSyncService
                         }
 
                         if ($totalMessages > 0) {
-                            $start = max(1, $totalMessages - 15);
+                            $fetchLimit = 500;
+                            $start = max(1, $totalMessages - $fetchLimit);
                             $end = $totalMessages;
 
                             for ($msgNum = $end; $msgNum >= $start; $msgNum--) {
@@ -531,15 +543,24 @@ class ImapSyncService
                                 $rawBodyData = preg_replace('/\r?\n\)\s*\r?\n' . preg_quote($fetchTag, '/') . '[\s\S]*$/', '', $rawBodyData);
                                 $rawBodyData = preg_replace('/\r?\n\)\s*$/', '', $rawBodyData);
 
-                                if (preg_match('/From:\s*(.*?)\r?\n/i', $rawHeaders, $m)) {
+                                $rawFrom = '';
+                                $rawTo = '';
+                                $subject = '(No Subject)';
+                                $dateStr = now();
+
+                                if (preg_match('/From:\s*(.*?)(?=\r?\n[^\t\s]|\r?\n\r?\n|$)/msi', $rawHeaders, $m)) {
                                     $rawFrom = trim($m[1]);
                                 }
 
-                                if (preg_match('/Subject:\s*(.*?)\r?\n/i', $rawHeaders, $m)) {
+                                if (preg_match('/To:\s*(.*?)(?=\r?\n[^\t\s]|\r?\n\r?\n|$)/msi', $rawHeaders, $m)) {
+                                    $rawTo = trim($m[1]);
+                                }
+
+                                if (preg_match('/Subject:\s*(.*?)(?=\r?\n[^\t\s]|\r?\n\r?\n|$)/msi', $rawHeaders, $m)) {
                                     $subject = $this->decodeMimeHeader(trim($m[1]));
                                 }
 
-                                if (preg_match('/Date:\s*(.*?)\r?\n/i', $rawHeaders, $m)) {
+                                if (preg_match('/Date:\s*(.*?)(?=\r?\n[^\t\s]|\r?\n\r?\n|$)/msi', $rawHeaders, $m)) {
                                     try {
                                         $dateStr = Carbon::parse(trim($m[1]));
                                     } catch (Exception $e) {
@@ -547,21 +568,44 @@ class ImapSyncService
                                     }
                                 }
 
-                                [$from, $senderEmail] = $this->cleanSender($rawFrom ?: $username, $username);
+                                [$from, $senderEmail] = $this->cleanSender(
+                                    $rawFrom ?: ($sf['folder_name'] === 'Sent' ? $account->email_address : $username),
+                                    $sf['folder_name'] === 'Sent' ? $account->email_address : $username
+                                );
                                 $initials = strtoupper(substr($from ?: 'EM', 0, 2));
+
+                                [$toName, $toEmail] = !empty($rawTo)
+                                    ? $this->cleanSender($rawTo, $account->email_address)
+                                    : ['', $account->email_address];
+                                $recipientTo = !empty($toEmail) ? $toEmail : $account->email_address;
 
                                 $parsedBody = $this->parseMimeBody($rawBodyData, $rawHeaders);
                                 $bodyHtml = $parsedBody['html'];
                                 $bodyText = $parsedBody['text'];
                                 $attachment = $parsedBody['attachment'] ?? null;
 
-                                $existingEmail = Email::where('email_account_id', $account->id)
-                                    ->where('subject', $subject)
-                                    ->first();
+                                $existingEmail = null;
+                                if ($uid) {
+                                    $existingEmail = Email::where('email_account_id', $account->id)
+                                        ->where('folder', $sf['folder_name'])
+                                        ->where('uid', $uid)
+                                        ->first();
+                                }
+                                if (!$existingEmail) {
+                                    $existingEmail = Email::where('email_account_id', $account->id)
+                                        ->where('folder', $sf['folder_name'])
+                                        ->where('subject', $subject)
+                                        ->where('date_sent', '>=', Carbon::parse($dateStr)->subMinutes(5))
+                                        ->where('date_sent', '<=', Carbon::parse($dateStr)->addMinutes(5))
+                                        ->first();
+                                }
 
                                 if ($existingEmail) {
                                     $existingEmail->update([
                                         'uid' => $uid ?: $existingEmail->uid,
+                                        'sender_name' => $from,
+                                        'sender_email' => $senderEmail,
+                                        'recipient_to' => $recipientTo,
                                         'body_html' => $bodyHtml,
                                         'body_text' => $bodyText,
                                         'preview' => substr($bodyText ?: $subject, 0, 120),
@@ -576,7 +620,7 @@ class ImapSyncService
                                         'sender_email' => $senderEmail,
                                         'initials' => $initials,
                                         'color' => self::generateAvatarColor($senderEmail),
-                                        'recipient_to' => $account->email_address,
+                                        'recipient_to' => $recipientTo,
                                         'subject' => $subject,
                                         'preview' => substr($bodyText ?: $subject, 0, 120),
                                         'body_html' => $bodyHtml,

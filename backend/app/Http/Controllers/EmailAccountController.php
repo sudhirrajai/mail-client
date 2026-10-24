@@ -47,6 +47,13 @@ class EmailAccountController extends Controller
         $this->validatePublicHost($validated['imap_host']);
         $this->validatePublicHost($validated['smtp_host']);
 
+        if (!$request->user()->canAddAccount()) {
+            return response()->json([
+                'message' => 'You have reached the maximum number of email accounts allowed on your plan (' . $request->user()->max_accounts . '). Please upgrade your plan to connect more accounts.',
+                'upgrade_required' => true,
+            ], 403);
+        }
+
         $account = $request->user()->emailAccounts()->create($validated);
 
         // Auto sync folders

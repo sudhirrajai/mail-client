@@ -2,7 +2,7 @@
   "name": "Mosaic Webmail",
   "short_name": "Mosaic",
   "description": "Focused, calm, and lightning-fast workspace for your email.",
-  "start_url": "/",
+  "start_url": "/mail",
   "scope": "/",
   "display": "standalone",
   "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
@@ -35,14 +35,14 @@
       "name": "Compose Email",
       "short_name": "Compose",
       "description": "Write a new email message",
-      "url": "/?action=compose",
+      "url": "/mail?action=compose",
       "icons": [{ "src": "/icons/icon-192x192.png", "sizes": "192x192" }]
     },
     {
       "name": "Inbox",
       "short_name": "Inbox",
       "description": "View your Inbox",
-      "url": "/?folder=Inbox",
+      "url": "/mail?folder=Inbox",
       "icons": [{ "src": "/icons/icon-192x192.png", "sizes": "192x192" }]
     },
     {

@@ -22,7 +22,7 @@ export default function LoginPage() {
     if (token) {
       api.getMe().then((res) => {
         if (res) {
-          router.replace('/')
+          router.replace('/mail')
         } else {
           setCheckingAuth(false)
         }
@@ -39,7 +39,7 @@ export default function LoginPage() {
     try {
       const res = await api.login(email, password)
       showSuccess('Welcome Back', `Logged in successfully as ${res.user.name}`)
-      router.replace('/')
+      router.replace('/mail')
     } catch (err: any) {
       showError('Login Failed', err.message || 'Invalid credentials provided.')
     } finally {

@@ -4,6 +4,19 @@ export interface User {
   id: number
   name: string
   email: string
+  role?: 'admin' | 'user'
+  is_admin?: boolean
+  plan?: 'free' | 'pro' | 'enterprise'
+  status?: 'active' | 'suspended'
+  max_storage_mb?: number
+  max_accounts?: number
+  ai_credits_monthly?: number
+  ai_credits_remaining?: number
+  created_at?: string
+  email_accounts_count?: number
+  emails_count?: number
+  used_storage_mb?: number
+  quota_percentage?: number
 }
 
 export interface EmailAccount {
@@ -134,6 +147,10 @@ class ApiClient {
     }
   }
 
+  async me() {
+    return this.request<{ user: User }>('/auth/me')
+  }
+
   async getMe() {
     if (!this.token) return null
     try {
@@ -176,13 +193,23 @@ class ApiClient {
   }
 
   // Emails API
-  async getEmails(accountId?: number, folder?: string, query?: string, filter?: string, tag?: string) {
+  async getEmails(
+    accountId?: number,
+    folder?: string,
+    query?: string,
+    filter?: string,
+    tag?: string,
+    page?: number,
+    perPage?: number
+  ) {
     const params = new URLSearchParams()
     if (accountId) params.append('account_id', accountId.toString())
     if (folder) params.append('folder', folder)
     if (query) params.append('query', query)
     if (filter) params.append('filter', filter)
     if (tag) params.append('tag', tag)
+    if (page) params.append('page', page.toString())
+    if (perPage) params.append('per_page', perPage.toString())
 
     const queryString = params.toString() ? `?${params.toString()}` : ''
     return this.request<{
@@ -190,6 +217,9 @@ class ApiClient {
       unread_count: number
       folder_counts?: Record<string, number>
       storage?: { formatted: string; percentage: number }
+      total?: number
+      page?: number
+      has_more?: boolean
     }>(`/emails${queryString}`)
   }
 
@@ -220,6 +250,34 @@ class ApiClient {
     return this.request<{ success: boolean; folder: string }>(`/emails/${id}/folder`, {
       method: 'PATCH',
       body: JSON.stringify({ folder }),
+    })
+  }
+
+  async bulkReadEmails(ids: number[], unread: boolean) {
+    return this.request<{ success: boolean; count: number; unread: boolean }>('/emails/bulk-read', {
+      method: 'POST',
+      body: JSON.stringify({ ids, unread }),
+    })
+  }
+
+  async bulkDeleteEmails(ids: number[]) {
+    return this.request<{ success: boolean; count: number }>('/emails/bulk-delete', {
+      method: 'POST',
+      body: JSON.stringify({ ids }),
+    })
+  }
+
+  async bulkMoveEmails(ids: number[], folder: string) {
+    return this.request<{ success: boolean; count: number; folder: string }>('/emails/bulk-folder', {
+      method: 'POST',
+      body: JSON.stringify({ ids, folder }),
+    })
+  }
+
+  async bulkStarEmails(ids: number[], starred: boolean) {
+    return this.request<{ success: boolean; count: number; starred: boolean }>('/emails/bulk-star', {
+      method: 'POST',
+      body: JSON.stringify({ ids, starred }),
     })
   }
 
@@ -261,6 +319,86 @@ class ApiClient {
   async updateProfile(data: { name: string; current_password?: string; new_password?: string }) {
     return this.request<{ message: string; user: User }>('/auth/profile', {
       method: 'PUT',
+      body: JSON.stringify(data),
+    })
+  }
+
+  // Admin Methods
+  async getAdminMetrics() {
+    return this.request<{
+      metrics: {
+        total_users: number
+        new_users_week: number
+        active_users: number
+        suspended_users: number
+        plans: { free: number; pro: number; enterprise: number }
+        total_accounts: number
+        total_emails: number
+        unread_emails: number
+        total_storage_mb: number
+      }
+      server: {
+        php_version: string
+        laravel_version: string
+        server_os: string
+        server_time: string
+        memory_usage: string
+        server_load: number[]
+        socket_extension: boolean
+        openssl_extension: boolean
+      }
+      recent_users: User[]
+    }>('/admin/metrics')
+  }
+
+  async getAdminUsers(params?: { search?: string; plan?: string; status?: string; role?: string; page?: number }) {
+    const query = new URLSearchParams()
+    if (params?.search) query.set('search', params.search)
+    if (params?.plan) query.set('plan', params.plan)
+    if (params?.status) query.set('status', params.status)
+    if (params?.role) query.set('role', params.role)
+    if (params?.page) query.set('page', String(params.page))
+    const qs = query.toString() ? `?${query.toString()}` : ''
+
+    return this.request<{
+      users: {
+        data: User[]
+        current_page: number
+        last_page: number
+        total: number
+      }
+    }>(`/admin/users${qs}`)
+  }
+
+  async updateAdminUser(id: number, data: Partial<User>) {
+    return this.request<{ message: string; user: User }>(`/admin/users/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async deleteAdminUser(id: number) {
+    return this.request<{ message: string }>(`/admin/users/${id}`, {
+      method: 'DELETE',
+    })
+  }
+
+  async impersonateUser(id: number) {
+    return this.request<{ message: string; token: string; user: User }>(`/admin/impersonate/${id}`, {
+      method: 'POST',
+    })
+  }
+
+  async testAdminConnection(data: {
+    type: 'imap' | 'smtp'
+    host: string
+    port: number
+    encryption: string
+    username: string
+    password: string
+  }) {
+    return this.request<{ success: boolean; message: string; latency_ms?: number }>('/admin/test-connection', {
+      method: 'POST',
       body: JSON.stringify(data),
     })
   }
