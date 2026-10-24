@@ -118,14 +118,42 @@ class EmailController extends Controller
             'Trash' => Email::whereIn('email_account_id', $accountIds)->where('folder', 'Trash')->count(),
         ];
 
-        $totalEmailCount = Email::whereIn('email_account_id', $accountIds)->count();
-        $usedMb = round($totalEmailCount * 0.45, 1);
-        $storage = [
-            'used_mb' => $usedMb,
-            'total_gb' => 15,
-            'formatted' => "{$usedMb} MB / 15 GB",
-            'percentage' => max(1, min(100, round(($usedMb / (15 * 1024)) * 100))),
-        ];
+        // Dynamic Quota Lookup per selected account or active account
+        $targetAccount = null;
+        if ($request->has('account_id') && !empty($request->account_id)) {
+            $targetAccount = EmailAccount::where('user_id', $user->id)->find($request->account_id);
+        } elseif (count($accountIds) === 1) {
+            $targetAccount = EmailAccount::where('user_id', $user->id)->find($accountIds[0]);
+        }
+
+        $storage = null;
+        if ($targetAccount) {
+            $quota = $this->imapService->getMailboxQuota($targetAccount);
+            if ($quota) {
+                $storage = $quota;
+            } else {
+                $totalEmailCount = Email::where('email_account_id', $targetAccount->id)->count();
+                $usedMb = round($totalEmailCount * 0.45, 1);
+                $isGmail = stripos($targetAccount->imap_host, 'gmail') !== false;
+                $limitFormatted = $isGmail ? '15 GB' : '1 GB';
+                $limitMb = $isGmail ? 15 * 1024 : 1024;
+                $storage = [
+                    'used_mb' => $usedMb,
+                    'total_gb' => $isGmail ? 15 : 1,
+                    'formatted' => "{$usedMb} MB / {$limitFormatted}",
+                    'percentage' => max(1, min(100, round(($usedMb / $limitMb) * 100))),
+                ];
+            }
+        } else {
+            $totalEmailCount = Email::whereIn('email_account_id', $accountIds)->count();
+            $usedMb = round($totalEmailCount * 0.45, 1);
+            $storage = [
+                'used_mb' => $usedMb,
+                'total_gb' => 1,
+                'formatted' => "{$usedMb} MB / Combined",
+                'percentage' => min(100, round(($usedMb / 1024) * 100)),
+            ];
+        }
 
         return response()->json([
             'emails' => $formattedEmails,

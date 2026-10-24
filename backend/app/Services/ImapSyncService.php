@@ -7,6 +7,7 @@ use App\Models\EmailAccount;
 use App\Models\Folder;
 use Exception;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
 
 class ImapSyncService
 {
@@ -887,5 +888,86 @@ class ImapSyncService
         } catch (Exception $e) {
             return false;
         }
+    }
+
+    /**
+     * Query live mailbox quota via IMAP RFC 2087 (GETQUOTAROOT)
+     */
+    public function getMailboxQuota(EmailAccount $account): ?array
+    {
+        $cacheKey = "imap_quota_{$account->id}";
+        return Cache::remember($cacheKey, 180, function () use ($account) {
+            $host = $account->imap_host;
+            $port = (int) $account->imap_port;
+            $username = $account->imap_username;
+            $password = $account->decrypted_imap_password;
+            $prefix = ($account->imap_encryption === 'ssl' || $port == 993) ? 'ssl://' : '';
+
+            $context = stream_context_create([
+                'ssl' => [
+                    'verify_peer' => false,
+                    'verify_peer_name' => false,
+                ]
+            ]);
+
+            $stream = @stream_socket_client(
+                $prefix . $host . ':' . $port,
+                $errno,
+                $errstr,
+                5,
+                STREAM_CLIENT_CONNECT,
+                $context
+            );
+
+            if (!$stream) {
+                return null;
+            }
+
+            fgets($stream, 512); // Banner
+            fputs($stream, "Q001 LOGIN \"$username\" \"$password\"\r\n");
+            while ($line = fgets($stream, 512)) {
+                if (strpos($line, 'Q001') === 0) break;
+            }
+
+            fputs($stream, "Q002 GETQUOTAROOT \"INBOX\"\r\n");
+            $quotaRes = '';
+            while ($line = fgets($stream, 512)) {
+                $quotaRes .= $line;
+                if (strpos($line, 'Q002') === 0) break;
+            }
+
+            fputs($stream, "Q003 LOGOUT\r\n");
+            fclose($stream);
+
+            // Parse: * QUOTA "..." (STORAGE 6647 976563)
+            if (preg_match('/\* QUOTA\s+"?[^"\r\n]*"?\s+\([^\)]*STORAGE\s+(\d+)\s+(\d+)/i', $quotaRes, $matches)) {
+                $usedKb = (int) $matches[1];
+                $limitKb = (int) $matches[2];
+                $usedMb = round($usedKb / 1024, 1);
+                $limitMb = round($limitKb / 1024, 1);
+
+                if ($limitMb >= 950 && $limitMb <= 1050) {
+                    $limitFormatted = '1 GB';
+                    $limitGb = 1.0;
+                } elseif ($limitMb >= 1050) {
+                    $limitFormatted = round($limitMb / 1024, 1) . ' GB';
+                    $limitGb = round($limitMb / 1024, 1);
+                } else {
+                    $limitFormatted = round($limitMb) . ' MB';
+                    $limitGb = round($limitMb / 1024, 2);
+                }
+
+                $percentage = $limitKb > 0 ? max(1, min(100, round(($usedKb / $limitKb) * 100))) : 0;
+
+                return [
+                    'used_mb' => $usedMb,
+                    'total_gb' => $limitGb,
+                    'formatted' => "{$usedMb} MB / {$limitFormatted}",
+                    'percentage' => $percentage,
+                ];
+            }
+
+            return null;
+        });
     }
 }

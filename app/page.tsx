@@ -188,8 +188,8 @@ export default function Page() {
   const [selectedTag, setSelectedTag] = useState<string | null>(null)
   const [folderCounts, setFolderCounts] = useState<Record<string, number>>({})
   const [storageInfo, setStorageInfo] = useState<{ formatted: string; percentage: number }>({
-    formatted: '0 MB / 15 GB',
-    percentage: 2,
+    formatted: '',
+    percentage: 0,
   })
   const [reply, setReply] = useState('')
 
@@ -1015,7 +1015,7 @@ export default function Page() {
             <div>
               <div className="mb-2 flex justify-between text-[11px] text-muted-foreground">
                 <span>Storage</span>
-                <span>{storageInfo.formatted}</span>
+                <span>{storageInfo.formatted || 'Calculating...'}</span>
               </div>
               <div className="h-1.5 overflow-hidden rounded-full bg-muted">
                 <div
