@@ -211,12 +211,19 @@ class EmailController extends Controller
 
     public function moveToFolder(Request $request, $id)
     {
-        $request->validate(['folder' => 'required|string']);
+        $request->validate(['folder' => 'required|string|in:Inbox,Starred,Sent,Drafts,Archive,Spam,Trash']);
         $user = $request->user();
         $accountIds = $user->emailAccounts()->pluck('id')->toArray();
 
         $email = Email::whereIn('email_account_id', $accountIds)->findOrFail($id);
-        $email->update(['folder' => $request->folder]);
+        $oldFolder = $email->folder;
+        $targetFolder = $request->folder;
+
+        $email->update(['folder' => $targetFolder]);
+
+        if ($email->emailAccount && $oldFolder !== $targetFolder) {
+            $this->imapService->moveEmailOnRemoteImap($email->emailAccount, $email, $targetFolder);
+        }
 
         return response()->json(['success' => true, 'folder' => $email->folder]);
     }

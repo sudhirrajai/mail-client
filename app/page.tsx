@@ -41,6 +41,8 @@ import { FilterDropdown } from '@/components/filter-dropdown'
 import { useToast } from '@/components/toast'
 import { EmailListSkeleton, EmailReaderSkeleton } from '@/components/email-skeleton'
 import { RichTextEditor } from '@/components/rich-text-editor'
+import { ProfileModal } from '@/components/profile-modal'
+import DOMPurify from 'dompurify'
 
 type Folder = 'Inbox' | 'Starred' | 'Sent' | 'Drafts' | 'Archive' | 'Spam' | 'Trash'
 
@@ -211,6 +213,7 @@ export default function Page() {
 
   // Modals & Dropdown State
   const [accountsModalOpen, setAccountsModalOpen] = useState(false)
+  const [profileModalOpen, setProfileModalOpen] = useState(false)
   const [composeOpen, setComposeOpen] = useState(false)
   const [mailboxDropdownOpen, setMailboxDropdownOpen] = useState(false)
 
@@ -671,6 +674,18 @@ export default function Page() {
     }
   }
 
+  const handleSpamEmail = async (id: number) => {
+    setEmails((current) => current.filter((email) => email.id !== id))
+    emailCache.clear()
+
+    try {
+      await api.moveToFolder(id, 'Spam')
+      showSuccess('Reported as Spam', 'Message moved to Spam folder.')
+    } catch (err: any) {
+      showError('Action Failed', err.message || 'Could not move message to Spam.')
+    }
+  }
+
   const handleDeleteEmail = async (id: number) => {
     const targetEmail = emails.find((e) => e.id === id)
     mailEventBus.emit('EMAIL_DELETED', { emailId: id, email: targetEmail })
@@ -794,17 +809,29 @@ export default function Page() {
             </div>
             {mounted && user ? (
             <div className="mb-4 flex items-center justify-between gap-2 rounded-xl border border-border/70 bg-muted/30 p-2">
-              <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground font-bold text-xs uppercase">
-                {user.name ? user.name.substring(0, 2) : 'US'}
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-semibold">{user.name}</p>
-                <p className="truncate text-[11px] text-muted-foreground">{user.email}</p>
-              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (typeof window !== 'undefined' && window.innerWidth < 768) {
+                    setSidebarOpen(false)
+                  }
+                  setProfileModalOpen(true)
+                }}
+                className="flex items-center gap-2 min-w-0 flex-1 text-left hover:opacity-85 transition cursor-pointer group"
+                title="View & Edit Profile"
+              >
+                <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground font-bold text-xs uppercase group-hover:ring-2 ring-primary/40 transition">
+                  {user.name ? user.name.substring(0, 2) : 'US'}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-semibold group-hover:text-primary transition">{user.name}</p>
+                  <p className="truncate text-[11px] text-muted-foreground">{user.email}</p>
+                </div>
+              </button>
               <button
                 onClick={handleLogout}
                 title="Log Out"
-                className="rounded-lg p-1 text-muted-foreground hover:bg-muted hover:text-red-500 transition"
+                className="rounded-lg p-1 text-muted-foreground hover:bg-muted hover:text-red-500 transition cursor-pointer"
               >
                 <LogOut className="size-4" />
               </button>
@@ -1157,13 +1184,13 @@ export default function Page() {
                               event.stopPropagation()
                               thread.emails.forEach((e) => handleMoveToInbox(e.id))
                             }}
-                            title="Move Thread to Inbox"
+                            title={folder === 'Spam' ? 'Not Spam / Move to Inbox' : 'Move Thread to Inbox'}
                             className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-primary transition"
                           >
                             <Inbox className="size-3.5" />
                           </button>
                         )}
-                        {folder !== 'Archive' && (
+                        {folder !== 'Archive' && folder !== 'Trash' && (
                           <button
                             type="button"
                             onClick={(event) => {
@@ -1174,6 +1201,19 @@ export default function Page() {
                             className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition"
                           >
                             <Archive className="size-3.5" />
+                          </button>
+                        )}
+                        {folder !== 'Spam' && folder !== 'Trash' && (
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              thread.emails.forEach((e) => handleSpamEmail(e.id))
+                            }}
+                            title="Report Spam"
+                            className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-rose-500 transition"
+                          >
+                            <ShieldAlert className="size-3.5" />
                           </button>
                         )}
                         <button
@@ -1242,18 +1282,35 @@ export default function Page() {
                 </IconButton>
                 {folder !== 'Inbox' && (
                   <IconButton
-                    label="Move to Inbox"
-                    onClick={() => selectedThread.emails.forEach((e) => handleMoveToInbox(e.id))}
+                    label={folder === 'Spam' ? 'Not Spam (Move to Inbox)' : 'Move to Inbox'}
+                    onClick={() => {
+                      selectedThread.emails.forEach((e) => handleMoveToInbox(e.id))
+                      setSelectedThreadKey(null)
+                    }}
                   >
                     <Inbox />
                   </IconButton>
                 )}
-                {folder !== 'Archive' && (
+                {folder !== 'Archive' && folder !== 'Trash' && (
                   <IconButton
                     label="Archive Thread"
-                    onClick={() => selectedThread.emails.forEach((e) => handleArchiveEmail(e.id))}
+                    onClick={() => {
+                      selectedThread.emails.forEach((e) => handleArchiveEmail(e.id))
+                      setSelectedThreadKey(null)
+                    }}
                   >
                     <Archive />
+                  </IconButton>
+                )}
+                {folder !== 'Spam' && folder !== 'Trash' && (
+                  <IconButton
+                    label="Report Spam"
+                    onClick={() => {
+                      selectedThread.emails.forEach((e) => handleSpamEmail(e.id))
+                      setSelectedThreadKey(null)
+                    }}
+                  >
+                    <ShieldAlert />
                   </IconButton>
                 )}
                 <IconButton
@@ -1267,7 +1324,10 @@ export default function Page() {
                 {folder !== 'Trash' && (
                   <IconButton
                     label="Delete Thread"
-                    onClick={() => selectedThread.emails.forEach((e) => handleDeleteEmail(e.id))}
+                    onClick={() => {
+                      selectedThread.emails.forEach((e) => handleDeleteEmail(e.id))
+                      setSelectedThreadKey(null)
+                    }}
                   >
                     <Trash2 />
                   </IconButton>
@@ -1349,7 +1409,7 @@ export default function Page() {
                     {/* Email Content Body */}
                     <article className="rich-editor-content text-sm overflow-x-auto text-foreground leading-relaxed">
                       {msg.body_html ? (
-                        <div dangerouslySetInnerHTML={{ __html: msg.body_html }} />
+                        <div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(msg.body_html) }} />
                       ) : (
                         <p className="whitespace-pre-wrap">{msg.body_text || msg.preview}</p>
                       )}
@@ -1521,6 +1581,17 @@ export default function Page() {
         onAccountsChange={() => {
           refreshAccounts()
           handleSync(true)
+        }}
+      />
+
+      {/* User Profile Modal */}
+      <ProfileModal
+        isOpen={profileModalOpen}
+        onClose={() => setProfileModalOpen(false)}
+        user={user}
+        onUserUpdate={(updatedUser) => {
+          setUser(updatedUser)
+          localStorage.setItem('mosaic_cached_user', JSON.stringify(updatedUser))
         }}
       />
     </main>

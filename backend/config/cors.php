@@ -19,7 +19,12 @@ return [
 
     'allowed_methods' => ['*'],
 
-    'allowed_origins' => ['*'],
+    'allowed_origins' => array_values(array_filter([
+        env('FRONTEND_URL', 'https://webmail.vmcore.in'),
+        'https://webmail.vmcore.in',
+        'http://localhost:3000',
+        'http://localhost:3002',
+    ])),
 
     'allowed_origins_patterns' => [],
 

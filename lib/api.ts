@@ -257,6 +257,13 @@ class ApiClient {
       body: JSON.stringify(data),
     })
   }
+
+  async updateProfile(data: { name: string; current_password?: string; new_password?: string }) {
+    return this.request<{ message: string; user: User }>('/auth/profile', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    })
+  }
 }
 
 export const api = new ApiClient()

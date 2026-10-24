@@ -460,9 +460,24 @@ class ImapSyncService
                         $sentRemoteFolder = 'INBOX.Sent';
                     }
 
+                    // Dynamic Spam / Junk Folder Detection
+                    $spamRemoteFolder = 'Spam';
+                    if (preg_match('/\* LIST \([^\)]*\\\\Junk[^\)]*\)\s+["\S]+\s+"?([^"\r\n]+)"?/i', $listOutput, $m)) {
+                        $spamRemoteFolder = trim($m[1]);
+                    } elseif (stripos($listOutput, '[Gmail]/Spam') !== false) {
+                        $spamRemoteFolder = '[Gmail]/Spam';
+                    } elseif (stripos($listOutput, 'INBOX.Spam') !== false) {
+                        $spamRemoteFolder = 'INBOX.Spam';
+                    } elseif (stripos($listOutput, 'Junk') !== false) {
+                        $spamRemoteFolder = 'Junk';
+                    }
+
+                    $spamFolder = Folder::where('email_account_id', $account->id)->where('type', 'Spam')->first();
+
                     $syncFolders = [
                         ['command' => "A002 SELECT \"INBOX\"\r\n", 'tag' => 'A002', 'folder_name' => 'Inbox', 'model' => $inboxFolder],
                         ['command' => "A004 SELECT \"$sentRemoteFolder\"\r\n", 'tag' => 'A004', 'folder_name' => 'Sent', 'model' => $sentFolder],
+                        ['command' => "A005 SELECT \"$spamRemoteFolder\"\r\n", 'tag' => 'A005', 'folder_name' => 'Spam', 'model' => $spamFolder],
                     ];
 
                     foreach ($syncFolders as $sf) {
@@ -483,12 +498,17 @@ class ImapSyncService
 
                             for ($msgNum = $end; $msgNum >= $start; $msgNum--) {
                                 $fetchTag = 'A00F' . $msgNum;
-                                fputs($stream, "$fetchTag FETCH $msgNum (BODY[HEADER.FIELDS (FROM TO SUBJECT DATE CONTENT-TYPE)] BODY[TEXT])\r\n");
+                                fputs($stream, "$fetchTag FETCH $msgNum (UID BODY[HEADER.FIELDS (FROM TO SUBJECT DATE CONTENT-TYPE)] BODY[TEXT])\r\n");
 
                                 $rawMsgData = '';
                                 while ($line = fgets($stream, 4096)) {
                                     $rawMsgData .= $line;
                                     if (strpos($line, $fetchTag) === 0) break;
+                                }
+
+                                $uid = null;
+                                if (preg_match('/UID\s+(\d+)/i', $rawMsgData, $uidM)) {
+                                    $uid = (int) $uidM[1];
                                 }
 
                                 $rawFrom = '';
@@ -540,18 +560,18 @@ class ImapSyncService
                                     ->first();
 
                                 if ($existingEmail) {
-                                    if (strpos($existingEmail->body_html, 'Message synced via IMAP socket.') !== false || strlen($existingEmail->body_html) < 200) {
-                                        $existingEmail->update([
-                                            'body_html' => $bodyHtml,
-                                            'body_text' => $bodyText,
-                                            'preview' => substr($bodyText ?: $subject, 0, 120),
-                                            'attachment' => $attachment ?: $existingEmail->attachment,
-                                        ]);
-                                    }
+                                    $existingEmail->update([
+                                        'uid' => $uid ?: $existingEmail->uid,
+                                        'body_html' => $bodyHtml,
+                                        'body_text' => $bodyText,
+                                        'preview' => substr($bodyText ?: $subject, 0, 120),
+                                        'attachment' => $attachment ?: $existingEmail->attachment,
+                                    ]);
                                 } else {
                                     Email::create([
                                         'email_account_id' => $account->id,
                                         'folder_id' => $sf['model'] ? $sf['model']->id : null,
+                                        'uid' => $uid,
                                         'sender_name' => $from,
                                         'sender_email' => $senderEmail,
                                         'initials' => $initials,
@@ -969,5 +989,158 @@ class ImapSyncService
 
             return null;
         });
+    }
+
+    /**
+     * Move an email from its current folder to a target folder on the remote IMAP server
+     */
+    public function moveEmailOnRemoteImap(EmailAccount $account, Email $email, string $targetFolder): bool
+    {
+        $host = $account->imap_host;
+        $port = (int) $account->imap_port;
+        $username = $account->imap_username;
+        $password = $account->decrypted_imap_password;
+        $prefix = ($account->imap_encryption === 'ssl' || $port == 993) ? 'ssl://' : '';
+
+        try {
+            $context = stream_context_create([
+                'ssl' => [
+                    'verify_peer' => false,
+                    'verify_peer_name' => false,
+                ]
+            ]);
+
+            $stream = @stream_socket_client(
+                $prefix . $host . ':' . $port,
+                $errno,
+                $errstr,
+                10,
+                STREAM_CLIENT_CONNECT,
+                $context
+            );
+
+            if (!$stream) return false;
+
+            fgets($stream, 512); // Banner
+            fputs($stream, "M001 LOGIN \"$username\" \"$password\"\r\n");
+            while ($line = fgets($stream, 512)) {
+                if (strpos($line, 'M001') === 0) break;
+            }
+
+            // List folders to detect real remote names
+            fputs($stream, "M002 LIST \"\" \"*\"\r\n");
+            $listOutput = '';
+            while ($line = fgets($stream, 512)) {
+                $listOutput .= $line;
+                if (strpos($line, 'M002') === 0) break;
+            }
+
+            // Determine remote destination folder
+            $dest = 'INBOX';
+            if ($targetFolder === 'Spam') {
+                if (preg_match('/\* LIST \([^\)]*\\\\Junk[^\)]*\)\s+["\S]+\s+"?([^"\r\n]+)"?/i', $listOutput, $m)) $dest = trim($m[1]);
+                elseif (stripos($listOutput, '[Gmail]/Spam') !== false) $dest = '[Gmail]/Spam';
+                elseif (stripos($listOutput, 'INBOX.Spam') !== false) $dest = 'INBOX.Spam';
+                elseif (stripos($listOutput, 'Junk') !== false) $dest = 'Junk';
+                else $dest = 'Spam';
+            } elseif ($targetFolder === 'Trash') {
+                if (preg_match('/\* LIST \([^\)]*\\\\Trash[^\)]*\)\s+["\S]+\s+"?([^"\r\n]+)"?/i', $listOutput, $m)) $dest = trim($m[1]);
+                elseif (stripos($listOutput, '[Gmail]/Trash') !== false) $dest = '[Gmail]/Trash';
+                elseif (stripos($listOutput, 'INBOX.Trash') !== false) $dest = 'INBOX.Trash';
+                else $dest = 'Trash';
+            } elseif ($targetFolder === 'Archive') {
+                if (preg_match('/\* LIST \([^\)]*\\\\Archive[^\)]*\)\s+["\S]+\s+"?([^"\r\n]+)"?/i', $listOutput, $m)) $dest = trim($m[1]);
+                elseif (stripos($listOutput, '[Gmail]/All Mail') !== false) $dest = '[Gmail]/All Mail';
+                elseif (stripos($listOutput, 'INBOX.Archive') !== false) $dest = 'INBOX.Archive';
+                elseif (stripos($listOutput, 'Archive') !== false) $dest = 'Archive';
+                else {
+                    // Create Archive folder if it doesn't exist
+                    fputs($stream, "M00C CREATE \"Archive\"\r\n");
+                    while ($l = fgets($stream, 512)) { if (strpos($l, 'M00C') === 0) break; }
+                    $dest = 'Archive';
+                }
+            } elseif ($targetFolder === 'Sent') {
+                if (preg_match('/\* LIST \([^\)]*\\\\Sent[^\)]*\)\s+["\S]+\s+"?([^"\r\n]+)"?/i', $listOutput, $m)) $dest = trim($m[1]);
+                elseif (stripos($listOutput, '[Gmail]/Sent Mail') !== false) $dest = '[Gmail]/Sent Mail';
+                else $dest = 'Sent';
+            }
+
+            // Determine source folder
+            $source = 'INBOX';
+            if ($email->folder === 'Spam') {
+                if (preg_match('/\* LIST \([^\)]*\\\\Junk[^\)]*\)\s+["\S]+\s+"?([^"\r\n]+)"?/i', $listOutput, $m)) $source = trim($m[1]);
+                elseif (stripos($listOutput, 'Spam') !== false) $source = 'Spam';
+                elseif (stripos($listOutput, 'Junk') !== false) $source = 'Junk';
+            } elseif ($email->folder === 'Sent') {
+                if (preg_match('/\* LIST \([^\)]*\\\\Sent[^\)]*\)\s+["\S]+\s+"?([^"\r\n]+)"?/i', $listOutput, $m)) $source = trim($m[1]);
+                else $source = 'Sent';
+            } elseif ($email->folder === 'Archive') {
+                $source = 'Archive';
+            } elseif ($email->folder === 'Trash') {
+                $source = 'Trash';
+            }
+
+            // Select source mailbox
+            fputs($stream, "M003 SELECT \"$source\"\r\n");
+            while ($line = fgets($stream, 512)) {
+                if (strpos($line, 'M003') === 0) break;
+            }
+
+            // Get UID
+            $uid = $email->uid;
+            if (!$uid) {
+                $cleanSubj = addslashes(substr($email->subject, 0, 40));
+                fputs($stream, "M004 SEARCH SUBJECT \"$cleanSubj\"\r\n");
+                $searchRes = '';
+                while ($line = fgets($stream, 512)) {
+                    $searchRes .= $line;
+                    if (strpos($line, 'M004') === 0) break;
+                }
+                if (preg_match('/\* SEARCH\s+(.*)/i', $searchRes, $sm)) {
+                    $ids = array_filter(explode(' ', trim($sm[1])));
+                    if (!empty($ids)) {
+                        $msgNum = end($ids);
+                        fputs($stream, "M005 FETCH $msgNum (UID)\r\n");
+                        while ($line = fgets($stream, 512)) {
+                            if (preg_match('/UID\s+(\d+)/i', $line, $um)) {
+                                $uid = (int) $um[1];
+                                $email->update(['uid' => $uid]);
+                            }
+                            if (strpos($line, 'M005') === 0) break;
+                        }
+                    }
+                }
+            }
+
+            if (!$uid) {
+                fclose($stream);
+                return false;
+            }
+
+            // Issue atomic UID MOVE or fallback to COPY + STORE + EXPUNGE
+            fputs($stream, "M006 UID MOVE $uid \"$dest\"\r\n");
+            $moveRes = '';
+            while ($line = fgets($stream, 512)) {
+                $moveRes .= $line;
+                if (strpos($line, 'M006') === 0) break;
+            }
+
+            if (strpos($moveRes, 'M006 OK') === false) {
+                fputs($stream, "M007 UID COPY $uid \"$dest\"\r\n");
+                while ($l = fgets($stream, 512)) { if (strpos($l, 'M007') === 0) break; }
+
+                fputs($stream, "M008 UID STORE $uid +FLAGS (\\Deleted)\r\n");
+                while ($l = fgets($stream, 512)) { if (strpos($l, 'M008') === 0) break; }
+
+                fputs($stream, "M009 EXPUNGE\r\n");
+                while ($l = fgets($stream, 512)) { if (strpos($l, 'M009') === 0) break; }
+            }
+
+            fputs($stream, "M00Z LOGOUT\r\n");
+            fclose($stream);
+            return true;
+        } catch (\Throwable $e) {
+            return false;
+        }
     }
 }

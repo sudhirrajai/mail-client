@@ -44,6 +44,9 @@ class EmailAccountController extends Controller
             'smtp_password' => 'required|string',
         ]);
 
+        $this->validatePublicHost($validated['imap_host']);
+        $this->validatePublicHost($validated['smtp_host']);
+
         $account = $request->user()->emailAccounts()->create($validated);
 
         // Auto sync folders
@@ -69,6 +72,9 @@ class EmailAccountController extends Controller
             'smtp_username' => 'required|string',
             'smtp_password' => 'required|string',
         ]);
+
+        $this->validatePublicHost($validated['imap_host']);
+        $this->validatePublicHost($validated['smtp_host']);
 
         // Test SMTP
         $smtpResult = $this->smtpService->testConnection($validated);
@@ -105,5 +111,16 @@ class EmailAccountController extends Controller
         $res = $this->imapService->syncAccount($account);
 
         return response()->json($res);
+    }
+
+    private function validatePublicHost(string $host): void
+    {
+        $ip = gethostbyname($host);
+        if (!$ip) return;
+
+        // Block private, loopback, and link-local IP addresses (SSRF defense)
+        if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+            abort(422, "Invalid mail host '{$host}'. Connecting to internal, loopback, or private network addresses is not allowed.");
+        }
     }
 }
