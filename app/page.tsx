@@ -1022,7 +1022,7 @@ export default function Page() {
             className="fixed inset-0 z-40 bg-black/60 backdrop-blur-xs md:hidden"
             onClick={() => setSidebarOpen(false)}
           />
-          <aside className="fixed inset-y-0 left-0 z-50 flex h-dvh w-72 flex-col justify-between overflow-hidden border-r border-border/80 bg-card p-3 shadow-2xl animate-in slide-in-from-left duration-200 md:static md:z-auto md:h-full md:w-60 md:border-border/70 md:bg-card/50 md:shadow-none md:animate-none">
+          <aside className="fixed inset-y-0 left-0 z-50 flex h-dvh max-h-[100dvh] w-72 flex-col justify-between overflow-y-auto md:overflow-hidden pb-8 md:pb-3 border-r border-border/80 bg-card p-3 shadow-2xl animate-in slide-in-from-left duration-200 md:static md:z-auto md:h-full md:w-60 md:border-border/70 md:bg-card/50 md:shadow-none md:animate-none">
             {/* Top Fixed Block */}
             <div className="shrink-0 space-y-2.5 pb-1">
               {/* Mobile Header with Close Button */}
