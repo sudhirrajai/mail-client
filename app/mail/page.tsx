@@ -268,6 +268,7 @@ export default function Page() {
 
   // Multi-Select & Bulk Operations State
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  const [selectAllInFolder, setSelectAllInFolder] = useState(false)
   const [bulkLoading, setBulkLoading] = useState(false)
 
   const [initLoading, setInitLoading] = useState(true)
@@ -539,6 +540,7 @@ export default function Page() {
     setSelectedThreadKey(null)
     setSelectedEmailId(null)
     setSelectedIds(new Set())
+    setSelectAllInFolder(false)
   }
 
   const handleAccountChange = (accId: number | undefined) => {
@@ -560,6 +562,7 @@ export default function Page() {
     setSelectedThreadKey(null)
     setSelectedEmailId(null)
     setSelectedIds(new Set())
+    setSelectAllInFolder(false)
   }
 
   const handleSync = async (notify = false, isBackground = false, targetFolder?: Folder, targetAccId?: number, targetQuery?: string, targetTag?: string | null) => {
@@ -973,6 +976,7 @@ export default function Page() {
     if (email.unread) {
       mailEventBus.emit('EMAIL_READ_TOGGLED', { emailId: email.id, unread: false })
       setEmails((current) => current.map((e) => (e.id === email.id ? { ...e, unread: false } : e)))
+      api.markRead(email.id, false).catch(() => {})
     }
 
     if (!email.body_html) {
@@ -990,9 +994,14 @@ export default function Page() {
     const latest = thread.latestEmail
     if (latest) {
       setSelectedEmailId(latest.id)
-      if (latest.unread) {
-        mailEventBus.emit('EMAIL_READ_TOGGLED', { emailId: latest.id, unread: false })
-        setEmails((current) => current.map((e) => (e.id === latest.id ? { ...e, unread: false } : e)))
+      const unreadInThread = thread.emails.filter((e) => e.unread)
+      if (unreadInThread.length > 0) {
+        unreadInThread.forEach((em) => {
+          mailEventBus.emit('EMAIL_READ_TOGGLED', { emailId: em.id, unread: false })
+          api.markRead(em.id, false).catch(() => {})
+        })
+        const unreadIds = new Set(unreadInThread.map((e) => e.id))
+        setEmails((current) => current.map((e) => (unreadIds.has(e.id) ? { ...e, unread: false } : e)))
       }
       if (!latest.body_html) {
         try {
@@ -1242,6 +1251,7 @@ export default function Page() {
   const handleToggleUnread = async (id: number, unread: boolean) => {
     setEmails((current) => current.map((e) => (e.id === id ? { ...e, unread } : e)))
     mailEventBus.emit('EMAIL_READ_TOGGLED', { emailId: id, unread })
+    emailCache.clear()
     try {
       await api.markRead(id, unread)
     } catch (e) {
@@ -1317,21 +1327,53 @@ export default function Page() {
   const toggleSelectAll = () => {
     if (selectedIds.size === visibleEmails.length) {
       setSelectedIds(new Set())
+      setSelectAllInFolder(false)
     } else {
       setSelectedIds(new Set(visibleEmails.map((e) => e.id)))
+      setSelectAllInFolder(false)
     }
   }
 
-  const handleBulkRead = async (unread: boolean) => {
-    if (selectedIds.size === 0) return
+  const handleBulkRead = async (unread: boolean, forceAllInFolder?: boolean) => {
+    const isAll = forceAllInFolder ?? selectAllInFolder
+    if (selectedIds.size === 0 && !isAll) return
     const ids = Array.from(selectedIds)
+    const idSet = new Set(ids)
     setBulkLoading(true)
-    setEmails((prev) => prev.map((e) => (selectedIds.has(e.id) ? { ...e, unread } : e)))
+
+    if (isAll) {
+      setEmails((prev) => prev.map((e) => ({ ...e, unread })))
+      mailEventBus.emit('BULK_READ_TOGGLED', { unread, allInFolder: true, folder })
+      if (!unread && folder === 'Inbox') {
+        setFolderCounts((prev) => ({ ...prev, Inbox: 0 }))
+      }
+    } else {
+      setEmails((prev) => prev.map((e) => (idSet.has(e.id) ? { ...e, unread } : e)))
+      mailEventBus.emit('BULK_READ_TOGGLED', { ids, unread, allInFolder: false })
+      if (!unread && folder === 'Inbox') {
+        setFolderCounts((prev) => ({ ...prev, Inbox: Math.max(0, (prev.Inbox || 0) - ids.length) }))
+      }
+    }
+
+    emailCache.clear()
     setSelectedIds(new Set())
+    setSelectAllInFolder(false)
+
     try {
-      await api.bulkReadEmails(ids, unread)
-      ids.forEach((id) => mailEventBus.emit('EMAIL_READ_TOGGLED', { emailId: id, unread }))
-      showSuccess('Updated', `${ids.length} emails marked as ${unread ? 'unread' : 'read'}.`)
+      if (isAll) {
+        const activeAccId = selectedAccountId || (accounts.length > 0 ? accounts[0].id : undefined)
+        await api.bulkReadEmails({
+          unread,
+          all_in_folder: true,
+          folder,
+          account_id: activeAccId,
+        })
+        showSuccess('Updated', `All messages in ${folder} marked as ${unread ? 'unread' : 'read'}.`)
+      } else {
+        await api.bulkReadEmails(ids, unread)
+        ids.forEach((id) => mailEventBus.emit('EMAIL_READ_TOGGLED', { emailId: id, unread }))
+        showSuccess('Updated', `${ids.length} emails marked as ${unread ? 'unread' : 'read'}.`)
+      }
     } catch (e: any) {
       showError('Action Failed', e.message || 'Failed to update emails.')
     } finally {
@@ -1342,13 +1384,16 @@ export default function Page() {
   const handleBulkDelete = async () => {
     if (selectedIds.size === 0) return
     const ids = Array.from(selectedIds)
+    const idSet = new Set(ids)
     setBulkLoading(true)
-    setEmails((prev) => prev.filter((e) => !selectedIds.has(e.id)))
-    if (selectedEmailId && selectedIds.has(selectedEmailId)) {
+    setEmails((prev) => prev.filter((e) => !idSet.has(e.id)))
+    if (selectedEmailId && idSet.has(selectedEmailId)) {
       setSelectedEmailId(null)
       setSelectedThreadKey(null)
     }
+    emailCache.clear()
     setSelectedIds(new Set())
+    setSelectAllInFolder(false)
     try {
       await api.bulkDeleteEmails(ids)
       ids.forEach((id) => mailEventBus.emit('EMAIL_DELETED', { emailId: id }))
@@ -1363,12 +1408,16 @@ export default function Page() {
   const handleBulkArchive = async () => {
     if (selectedIds.size === 0) return
     const ids = Array.from(selectedIds)
+    const idSet = new Set(ids)
     setBulkLoading(true)
-    setEmails((prev) => prev.filter((e) => !selectedIds.has(e.id)))
-    if (selectedEmailId && selectedIds.has(selectedEmailId)) {
+    setEmails((prev) => prev.filter((e) => !idSet.has(e.id)))
+    if (selectedEmailId && idSet.has(selectedEmailId)) {
       setSelectedEmailId(null)
       setSelectedThreadKey(null)
     }
+    emailCache.clear()
+    setSelectedIds(new Set())
+    setSelectAllInFolder(false)
     setSelectedIds(new Set())
     try {
       await api.bulkMoveEmails(ids, 'Archive')
@@ -1838,71 +1887,105 @@ export default function Page() {
 
         {/* Bulk Action Toolbar or Standard Header */}
         {selectedIds.size > 0 ? (
-          <div className="flex items-center gap-1.5 border-b border-primary/20 bg-primary/5 px-3 py-2 text-xs animate-in fade-in">
-            <button
-              onClick={toggleSelectAll}
-              className="flex items-center gap-1.5 rounded-lg px-2 py-1 font-semibold text-primary hover:bg-primary/10 transition cursor-pointer"
-              title={selectedIds.size === visibleEmails.length ? 'Deselect All' : 'Select All'}
-            >
-              <div className={cn(
-                'flex size-4 items-center justify-center rounded border transition',
-                selectedIds.size === visibleEmails.length ? 'border-primary bg-primary text-primary-foreground' : 'border-primary/60 bg-background'
-              )}>
-                <Check className="size-2.5 stroke-[3]" />
+          <>
+            <div className="flex items-center gap-1.5 border-b border-primary/20 bg-primary/5 px-3 py-2 text-xs animate-in fade-in">
+              <button
+                onClick={toggleSelectAll}
+                className="flex items-center gap-1.5 rounded-lg px-2 py-1 font-semibold text-primary hover:bg-primary/10 transition cursor-pointer"
+                title={selectedIds.size === visibleEmails.length ? 'Deselect All' : 'Select All'}
+              >
+                <div className={cn(
+                  'flex size-4 items-center justify-center rounded border transition',
+                  selectedIds.size === visibleEmails.length ? 'border-primary bg-primary text-primary-foreground' : 'border-primary/60 bg-background'
+                )}>
+                  <Check className="size-2.5 stroke-[3]" />
+                </div>
+                <span>{selectAllInFolder ? `All in ${folder}` : selectedIds.size}</span>
+              </button>
+
+              <div className="h-4 w-px bg-border/60 mx-1" />
+
+              <button
+                onClick={() => handleBulkRead(false)}
+                disabled={bulkLoading}
+                title="Mark as Read"
+                className="flex items-center gap-1 rounded-lg px-2 py-1 text-muted-foreground hover:bg-muted hover:text-foreground transition cursor-pointer font-medium"
+              >
+                <MailOpen className="size-3.5" />
+                <span className="hidden sm:inline">Read</span>
+              </button>
+
+              <button
+                onClick={() => handleBulkRead(true)}
+                disabled={bulkLoading}
+                title="Mark as Unread"
+                className="flex items-center gap-1 rounded-lg px-2 py-1 text-muted-foreground hover:bg-muted hover:text-foreground transition cursor-pointer font-medium"
+              >
+                <Mail className="size-3.5" />
+                <span className="hidden sm:inline">Unread</span>
+              </button>
+
+              <button
+                onClick={handleBulkArchive}
+                disabled={bulkLoading}
+                title="Archive Selected"
+                className="flex items-center gap-1 rounded-lg px-2 py-1 text-muted-foreground hover:bg-muted hover:text-foreground transition cursor-pointer font-medium"
+              >
+                <Archive className="size-3.5" />
+                <span className="hidden sm:inline">Archive</span>
+              </button>
+
+              <button
+                onClick={handleBulkDelete}
+                disabled={bulkLoading}
+                title="Delete Selected"
+                className="flex items-center gap-1 rounded-lg px-2 py-1 text-rose-500 hover:bg-rose-500/10 transition cursor-pointer font-medium ml-auto"
+              >
+                <Trash2 className="size-3.5" />
+                <span className="hidden sm:inline">Delete</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setSelectedIds(new Set())
+                  setSelectAllInFolder(false)
+                }}
+                title="Cancel Selection"
+                className="rounded-lg p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition cursor-pointer"
+              >
+                <X className="size-3.5" />
+              </button>
+            </div>
+
+            {selectedIds.size === visibleEmails.length && (hasMore || (folderCounts[folder] ?? 0) > visibleEmails.length) && (
+              <div className="flex items-center justify-center gap-2 bg-primary/10 px-3 py-1.5 text-xs text-center border-b border-border/60 animate-in fade-in">
+                {!selectAllInFolder ? (
+                  <>
+                    <span>All <strong>{visibleEmails.length}</strong> conversations on this page are selected.</span>
+                    <button
+                      onClick={() => setSelectAllInFolder(true)}
+                      className="font-semibold text-primary hover:underline cursor-pointer"
+                    >
+                      Select all messages in {folder}
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <span>All messages in <strong>{folder}</strong> are selected.</span>
+                    <button
+                      onClick={() => {
+                        setSelectAllInFolder(false)
+                        setSelectedIds(new Set())
+                      }}
+                      className="font-semibold text-primary hover:underline cursor-pointer"
+                    >
+                      Clear selection
+                    </button>
+                  </>
+                )}
               </div>
-              <span>{selectedIds.size}</span>
-            </button>
-
-            <div className="h-4 w-px bg-border/60 mx-1" />
-
-            <button
-              onClick={() => handleBulkRead(false)}
-              disabled={bulkLoading}
-              title="Mark as Read"
-              className="flex items-center gap-1 rounded-lg px-2 py-1 text-muted-foreground hover:bg-muted hover:text-foreground transition cursor-pointer font-medium"
-            >
-              <MailOpen className="size-3.5" />
-              <span className="hidden sm:inline">Read</span>
-            </button>
-
-            <button
-              onClick={() => handleBulkRead(true)}
-              disabled={bulkLoading}
-              title="Mark as Unread"
-              className="flex items-center gap-1 rounded-lg px-2 py-1 text-muted-foreground hover:bg-muted hover:text-foreground transition cursor-pointer font-medium"
-            >
-              <Mail className="size-3.5" />
-              <span className="hidden sm:inline">Unread</span>
-            </button>
-
-            <button
-              onClick={handleBulkArchive}
-              disabled={bulkLoading}
-              title="Archive Selected"
-              className="flex items-center gap-1 rounded-lg px-2 py-1 text-muted-foreground hover:bg-muted hover:text-foreground transition cursor-pointer font-medium"
-            >
-              <Archive className="size-3.5" />
-              <span className="hidden sm:inline">Archive</span>
-            </button>
-
-            <button
-              onClick={handleBulkDelete}
-              disabled={bulkLoading}
-              title="Delete Selected"
-              className="flex items-center gap-1 rounded-lg px-2 py-1 text-rose-500 hover:bg-rose-500/10 transition cursor-pointer font-medium ml-auto"
-            >
-              <Trash2 className="size-3.5" />
-              <span className="hidden sm:inline">Delete</span>
-            </button>
-
-            <button
-              onClick={() => setSelectedIds(new Set())}
-              title="Cancel Selection"
-              className="rounded-lg p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition cursor-pointer"
-            >
-              <X className="size-3.5" />
-            </button>
-          </div>
+            )}
+          </>
         ) : (
           <div className="flex items-center gap-1 border-b border-border/70 px-4 py-2">
             <button
@@ -1922,9 +2005,20 @@ export default function Page() {
         <div className="flex items-center justify-between px-4 py-3 border-b border-border/50">
           <div>
             <h1 className="text-lg font-semibold">{folder}</h1>
-            <p className="text-xs text-muted-foreground">
-              {folder === 'Inbox' ? `${unreadCount} unread` : 'All emails'}
-            </p>
+            <div className="flex items-center gap-2">
+              <p className="text-xs text-muted-foreground">
+                {folder === 'Inbox' ? `${unreadCount} unread` : 'All emails'}
+              </p>
+              {unreadCount > 0 && folder === 'Inbox' && (
+                <button
+                  onClick={() => handleBulkRead(false, true)}
+                  disabled={bulkLoading}
+                  className="text-xs text-primary hover:underline font-medium cursor-pointer"
+                >
+                  • Mark all as read
+                </button>
+              )}
+            </div>
           </div>
 
           {/* View Mode Toggle: Conversation View vs Standard Mailbox */}

@@ -3,6 +3,7 @@ import { EmailItem } from './api'
 export type MailEventType =
   | 'EMAIL_STAR_TOGGLED'
   | 'EMAIL_READ_TOGGLED'
+  | 'BULK_READ_TOGGLED'
   | 'EMAIL_DELETED'
   | 'EMAIL_SENT'
   | 'NEW_EMAILS_RECEIVED'
@@ -10,6 +11,7 @@ export type MailEventType =
 export interface MailEventPayloads {
   EMAIL_STAR_TOGGLED: { emailId: number; starred: boolean }
   EMAIL_READ_TOGGLED: { emailId: number; unread: boolean }
+  BULK_READ_TOGGLED: { ids?: number[]; unread: boolean; allInFolder?: boolean; folder?: string }
   EMAIL_DELETED: { emailId: number; email?: EmailItem }
   EMAIL_SENT: { email: EmailItem }
   NEW_EMAILS_RECEIVED: { newEmails: EmailItem[] }

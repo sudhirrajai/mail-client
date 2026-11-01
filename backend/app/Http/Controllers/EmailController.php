@@ -99,7 +99,8 @@ class EmailController extends Controller
 
         if ($page !== null) {
             $emails = $query->select([
-                'id', 'email_account_id', 'sender_name', 'sender_email',
+                'id', 'email_account_id', 'uid', 'message_id', 'in_reply_to', 'references',
+                'sender_name', 'sender_email',
                 'recipient_to', 'recipient_cc', 'recipient_bcc',
                 'initials', 'color', 'subject', 'preview', 'body_html', 'body_text', 'date_sent',
                 'folder', 'unread', 'starred', 'tags', 'attachment'
@@ -113,7 +114,8 @@ class EmailController extends Controller
             $hasMore = ($page * $perPage) < $totalEmailsCount;
         } else {
             $emails = $query->select([
-                'id', 'email_account_id', 'sender_name', 'sender_email',
+                'id', 'email_account_id', 'uid', 'message_id', 'in_reply_to', 'references',
+                'sender_name', 'sender_email',
                 'recipient_to', 'recipient_cc', 'recipient_bcc',
                 'initials', 'color', 'subject', 'preview', 'body_html', 'body_text', 'date_sent',
                 'folder', 'unread', 'starred', 'tags', 'attachment'
@@ -230,7 +232,9 @@ class EmailController extends Controller
         $email->update(['unread' => $request->boolean('unread')]);
 
         if ($email->emailAccount) {
-            $this->imapService->markReadOnRemoteImap($email->emailAccount, $email, $email->unread);
+            try {
+                $this->imapService->markReadOnRemoteImap($email->emailAccount, $email, $email->unread);
+            } catch (\Throwable $e) {}
         }
 
         return response()->json(['unread' => $email->unread]);
@@ -278,26 +282,69 @@ class EmailController extends Controller
     public function bulkRead(Request $request)
     {
         $request->validate([
-            'ids' => 'required|array',
+            'ids' => 'nullable|array',
             'ids.*' => 'integer',
             'unread' => 'required|boolean',
+            'all_in_folder' => 'nullable|boolean',
+            'folder' => 'nullable|string',
+            'account_id' => 'nullable|integer',
         ]);
 
         $user = $request->user();
         $accountIds = $user->emailAccounts()->pluck('id')->toArray();
-        $emails = Email::whereIn('email_account_id', $accountIds)->whereIn('id', $request->ids)->get();
-
         $unread = $request->boolean('unread');
-        foreach ($emails as $email) {
-            $email->update(['unread' => $unread]);
-            if ($email->emailAccount) {
+        $allInFolder = $request->boolean('all_in_folder');
+
+        if ($allInFolder) {
+            $query = Email::whereIn('email_account_id', $accountIds);
+            if ($request->filled('folder')) {
+                $query->where('folder', $request->folder);
+            }
+            if ($request->filled('account_id')) {
+                $query->where('email_account_id', $request->account_id);
+            }
+            $targetEmails = $query->select(['id', 'email_account_id', 'uid', 'folder'])->get();
+            $count = $query->update(['unread' => $unread]);
+
+            // Remote IMAP sync in bulk
+            $emailsByAccount = $targetEmails->groupBy('email_account_id');
+            foreach ($emailsByAccount as $accId => $accEmails) {
+                $account = $user->emailAccounts()->find($accId);
+                if (!$account) continue;
+                $uids = $accEmails->pluck('uid')->filter()->values()->toArray();
+                if (!empty($uids)) {
+                    try {
+                        $this->imapService->bulkMarkReadOnRemoteImap($account, $uids, $unread);
+                    } catch (\Throwable $e) {}
+                }
+            }
+
+            return response()->json(['success' => true, 'count' => $count, 'unread' => $unread]);
+        }
+
+        $ids = $request->input('ids', []);
+        if (empty($ids)) {
+            return response()->json(['success' => true, 'count' => 0, 'unread' => $unread]);
+        }
+
+        $query = Email::whereIn('email_account_id', $accountIds)->whereIn('id', $ids);
+        $targetEmails = $query->select(['id', 'email_account_id', 'uid', 'folder'])->get();
+        $count = $query->update(['unread' => $unread]);
+
+        // Remote IMAP sync in bulk
+        $emailsByAccount = $targetEmails->groupBy('email_account_id');
+        foreach ($emailsByAccount as $accId => $accEmails) {
+            $account = $user->emailAccounts()->find($accId);
+            if (!$account) continue;
+            $uids = $accEmails->pluck('uid')->filter()->values()->toArray();
+            if (!empty($uids)) {
                 try {
-                    $this->imapService->markReadOnRemoteImap($email->emailAccount, $email, $unread);
-                } catch (\Exception $e) {}
+                    $this->imapService->bulkMarkReadOnRemoteImap($account, $uids, $unread);
+                } catch (\Throwable $e) {}
             }
         }
 
-        return response()->json(['success' => true, 'count' => $emails->count(), 'unread' => $unread]);
+        return response()->json(['success' => true, 'count' => $count, 'unread' => $unread]);
     }
 
     public function bulkDelete(Request $request)

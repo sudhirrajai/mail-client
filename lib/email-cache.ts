@@ -37,6 +37,22 @@ class EmailCacheManager {
       })
     })
 
+    // Observer 2b: Bulk Read Toggle Event
+    mailEventBus.on('BULK_READ_TOGGLED', ({ ids, unread, allInFolder, folder }) => {
+      if (allInFolder) {
+        this.cache.forEach((entry, key) => {
+          if (!folder || key.includes(`_${folder}_`)) {
+            entry.emails = entry.emails.map((e) => ({ ...e, unread }))
+          }
+        })
+      } else if (ids && ids.length > 0) {
+        const idSet = new Set(ids)
+        this.cache.forEach((entry) => {
+          entry.emails = entry.emails.map((e) => (idSet.has(e.id) ? { ...e, unread } : e))
+        })
+      }
+    })
+
     // Observer 3: Delete Email Event (Moves email to Trash in cache, removes from Inbox/Sent/Starred)
     mailEventBus.on('EMAIL_DELETED', ({ emailId, email }) => {
       this.cache.forEach((entry, key) => {

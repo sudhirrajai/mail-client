@@ -255,10 +255,19 @@ class ApiClient {
     })
   }
 
-  async bulkReadEmails(ids: number[], unread: boolean) {
+  async bulkReadEmails(
+    paramsOrIds: number[] | { ids?: number[]; unread: boolean; all_in_folder?: boolean; folder?: string; account_id?: number },
+    unreadArg?: boolean
+  ) {
+    let payload: Record<string, unknown>
+    if (Array.isArray(paramsOrIds)) {
+      payload = { ids: paramsOrIds, unread: unreadArg ?? false }
+    } else {
+      payload = paramsOrIds
+    }
     return this.request<{ success: boolean; count: number; unread: boolean }>('/emails/bulk-read', {
       method: 'POST',
-      body: JSON.stringify({ ids, unread }),
+      body: JSON.stringify(payload),
     })
   }
 

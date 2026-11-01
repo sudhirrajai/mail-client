@@ -757,6 +757,54 @@ class ImapSyncService
         }
     }
 
+    public function bulkMarkReadOnRemoteImap(EmailAccount $account, array $uids, bool $unread): void
+    {
+        if (empty($uids)) return;
+
+        try {
+            $uidSequence = implode(',', array_filter(array_map('intval', $uids)));
+            if (empty($uidSequence)) return;
+
+            if (function_exists('imap_open')) {
+                $host = $account->imap_host;
+                $port = $account->imap_port ?: 993;
+                $encryption = strtolower($account->imap_encryption) === 'tls' || strtolower($account->imap_encryption) === 'ssl' ? '/ssl/novalidate-cert' : '/novalidate-cert';
+                $serverSpec = "{" . $host . ":" . $port . "/imap" . $encryption . "}INBOX";
+
+                $mbox = @imap_open($serverSpec, $account->imap_username, $account->decrypted_imap_password);
+                if ($mbox) {
+                    $flag = '\\Seen';
+                    if ($unread) {
+                        @imap_clearflag_full($mbox, $uidSequence, $flag, ST_UID);
+                    } else {
+                        @imap_setflag_full($mbox, $uidSequence, $flag, ST_UID);
+                    }
+                    @imap_close($mbox);
+                }
+            } else {
+                $action = $unread ? "-FLAGS (\\Seen)" : "+FLAGS (\\Seen)";
+                $this->sendSocketImapCommand($account, 'INBOX', [
+                    "UID STORE $uidSequence $action"
+                ]);
+            }
+        } catch (\Throwable $e) {
+            // Log remote IMAP flag update failure silently
+        }
+    }
+
+    public function markAllReadOnRemoteImap(EmailAccount $account, string $folder, bool $unread): void
+    {
+        try {
+            $action = $unread ? "-FLAGS (\\Seen)" : "+FLAGS (\\Seen)";
+            $targetFolder = $folder === 'Inbox' ? 'INBOX' : $folder;
+            $this->sendSocketImapCommand($account, $targetFolder, [
+                "STORE 1:* $action"
+            ]);
+        } catch (\Throwable $e) {
+            // Log remote IMAP flag update failure silently
+        }
+    }
+
     /**
      * Update starred/flagged status on remote IMAP server
      */
