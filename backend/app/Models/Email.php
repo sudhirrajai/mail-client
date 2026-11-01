@@ -13,6 +13,8 @@ class Email extends Model
         'email_account_id',
         'folder_id',
         'message_id',
+        'in_reply_to',
+        'references',
         'uid',
         'sender_name',
         'sender_email',

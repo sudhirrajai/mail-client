@@ -352,6 +352,9 @@ class ImapSyncService
                                 [$from, $senderEmail] = $this->cleanSender($fromFormatted, $fallbackEmail);
                                 $subject = isset($header->subject) ? $this->decodeMimeHeader($header->subject) : '(No Subject)';
                                 $dateStr = isset($header->date) ? Carbon::parse($header->date) : now();
+                                $msgId = isset($header->message_id) ? trim($header->message_id, " <>\r\n\t") : null;
+                                $inReplyTo = isset($header->in_reply_to) ? trim($header->in_reply_to, " <>\r\n\t") : null;
+                                $references = isset($header->references) ? trim($header->references) : null;
 
                                 $toEmail = isset($header->to[0]->mailbox) && isset($header->to[0]->host)
                                     ? $header->to[0]->mailbox . '@' . $header->to[0]->host
@@ -387,6 +390,9 @@ class ImapSyncService
                                     Email::create([
                                         'email_account_id' => $account->id,
                                         'folder_id' => $targetInfo['model'] ? $targetInfo['model']->id : null,
+                                        'message_id' => $msgId,
+                                        'in_reply_to' => $inReplyTo,
+                                        'references' => $references,
                                         'uid' => $uid,
                                         'sender_name' => $from,
                                         'sender_email' => $senderEmail,
@@ -568,6 +574,21 @@ class ImapSyncService
                                     }
                                 }
 
+                                $messageId = null;
+                                if (preg_match('/Message-ID:\s*(.*?)(?=\r?\n[^\t\s]|\r?\n\r?\n|$)/msi', $rawHeaders, $m)) {
+                                    $messageId = trim($m[1], " <>\r\n\t");
+                                }
+
+                                $inReplyTo = null;
+                                if (preg_match('/In-Reply-To:\s*(.*?)(?=\r?\n[^\t\s]|\r?\n\r?\n|$)/msi', $rawHeaders, $m)) {
+                                    $inReplyTo = trim($m[1], " <>\r\n\t");
+                                }
+
+                                $references = null;
+                                if (preg_match('/References:\s*(.*?)(?=\r?\n[^\t\s]|\r?\n\r?\n|$)/msi', $rawHeaders, $m)) {
+                                    $references = trim($m[1]);
+                                }
+
                                 [$from, $senderEmail] = $this->cleanSender(
                                     $rawFrom ?: ($sf['folder_name'] === 'Sent' ? $account->email_address : $username),
                                     $sf['folder_name'] === 'Sent' ? $account->email_address : $username
@@ -615,6 +636,9 @@ class ImapSyncService
                                     Email::create([
                                         'email_account_id' => $account->id,
                                         'folder_id' => $sf['model'] ? $sf['model']->id : null,
+                                        'message_id' => $messageId,
+                                        'in_reply_to' => $inReplyTo,
+                                        'references' => $references,
                                         'uid' => $uid,
                                         'sender_name' => $from,
                                         'sender_email' => $senderEmail,

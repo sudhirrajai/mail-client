@@ -50,6 +50,8 @@ export interface EmailItem {
   email_account_id: number
   folder_id: number
   message_id?: string
+  in_reply_to?: string
+  references?: string
   uid?: number
   sender_name: string
   sender_email: string

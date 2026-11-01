@@ -453,6 +453,8 @@ class EmailController extends Controller
 
             $createdEmail = Email::create([
                 'email_account_id' => $account->id,
+                'in_reply_to' => $request->input('in_reply_to'),
+                'references' => $request->input('references'),
                 'sender_name' => $account->name ?: $request->user()->name,
                 'sender_email' => $account->email_address,
                 'initials' => $initials,
@@ -552,6 +554,9 @@ class EmailController extends Controller
         return [
             'id' => $email->id,
             'email_account_id' => $email->email_account_id,
+            'message_id' => $email->message_id,
+            'in_reply_to' => $email->in_reply_to,
+            'references' => $email->references,
             'sender' => $email->sender_name ?: $email->sender_email,
             'sender_name' => $email->sender_name ?: $email->sender_email,
             'sender_email' => $email->sender_email,

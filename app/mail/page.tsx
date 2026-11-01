@@ -63,8 +63,61 @@ const folderIcons: Record<Folder, typeof Inbox> = {
   Trash: Trash2,
 }
 
-function normalizeSubject(subject: string): string {
-  return subject.replace(/^(re|fwd|fw):\s*/i, '').trim().toLowerCase()
+const REPLY_PREFIX_REGEX = /^((re|fwd|fw|aw|sv|vs)(\[\d+\])?:\s*)+/i
+
+function isReplyOrForward(subject?: string): boolean {
+  if (!subject) return false
+  return REPLY_PREFIX_REGEX.test(subject.trim())
+}
+
+function cleanSubject(subject?: string): string {
+  if (!subject) return '(No Subject)'
+  const cleaned = subject.replace(REPLY_PREFIX_REGEX, '').trim()
+  return cleaned || '(No Subject)'
+}
+
+function normalizeSubject(subject?: string): string {
+  return cleanSubject(subject).toLowerCase()
+}
+
+function extractEmailAddresses(str?: string): string[] {
+  if (!str) return []
+  const matches = str.match(/[\w.+-]+@[\w-]+\.[\w.-]+/g)
+  return matches ? matches.map((e) => e.toLowerCase().trim()) : []
+}
+
+function getEmailCounterparties(email: EmailItem, myEmailAddresses: Set<string>): Set<string> {
+  const counterparties = new Set<string>()
+  const sender = (email.sender_email || '').toLowerCase().trim()
+  if (sender && !myEmailAddresses.has(sender)) {
+    counterparties.add(sender)
+  }
+
+  const recipients = [
+    ...extractEmailAddresses(email.recipient_to),
+    ...extractEmailAddresses(email.recipient_cc),
+    ...extractEmailAddresses(email.recipient_bcc),
+  ]
+
+  for (const r of recipients) {
+    if (r && !myEmailAddresses.has(r)) {
+      counterparties.add(r)
+    }
+  }
+
+  if (counterparties.size === 0) {
+    if (sender) counterparties.add(sender)
+    for (const r of recipients) if (r) counterparties.add(r)
+  }
+
+  return counterparties
+}
+
+function setsOverlap<T>(a: Set<T>, b: Set<T>): boolean {
+  for (const item of a) {
+    if (b.has(item)) return true
+  }
+  return false
 }
 
 interface EmailThread {
@@ -75,6 +128,7 @@ interface EmailThread {
   unread: boolean
   starred: boolean
   count: number
+  sendersSummary: string
 }
 
 function getCachedUser(): User | null {
@@ -193,6 +247,7 @@ export default function Page() {
   const [folder, setFolder] = useState<Folder>('Inbox')
   const [selectedThreadKey, setSelectedThreadKey] = useState<string | null>(null)
   const [selectedEmailId, setSelectedEmailId] = useState<number | null>(null)
+  const [viewMode, setViewMode] = useState<'threads' | 'messages'>('threads')
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState('All')
   const [selectedTag, setSelectedTag] = useState<string | null>(null)
@@ -252,6 +307,7 @@ export default function Page() {
   const [composeSubject, setComposeSubject] = useState('')
   const [composeBody, setComposeBody] = useState('')
   const [composeAttachments, setComposeAttachments] = useState<import('@/components/rich-text-editor').AttachmentItem[]>([])
+  const [composeInReplyTo, setComposeInReplyTo] = useState<string | undefined>(undefined)
   const [sending, setSending] = useState(false)
 
   // Smart reply recipient resolution: ensures user never accidentally replies to their own email address
@@ -309,11 +365,8 @@ export default function Page() {
   }
 
   const getReplySubject = (sub: string): string => {
-    const trimmed = (sub || '').trim()
-    if (/^re:\s*/i.test(trimmed)) {
-      return trimmed
-    }
-    return `Re: ${trimmed || '(No Subject)'}`
+    const base = cleanSubject(sub)
+    return `Re: ${base}`
   }
 
   const handleComposeFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -367,6 +420,10 @@ export default function Page() {
         if (saved && ['Inbox', 'Starred', 'Sent', 'Drafts', 'Archive', 'Spam', 'Trash'].includes(saved)) {
           setFolder(saved)
           currentFolderRef.current = saved
+        }
+        const savedViewMode = localStorage.getItem('mosaic_view_mode') as 'threads' | 'messages'
+        if (savedViewMode && (savedViewMode === 'threads' || savedViewMode === 'messages')) {
+          setViewMode(savedViewMode)
         }
       }
     }
@@ -742,47 +799,149 @@ export default function Page() {
 
   // Email Threading Conversation Grouping Logic
   const threads = useMemo<EmailThread[]>(() => {
-    const map = new Map<string, EmailItem[]>()
+    const currentAccount = accounts.find((a) => a.id === selectedAccountId) || accounts[0]
+    const myEmails = new Set(
+      [
+        currentAccount?.email_address?.toLowerCase().trim(),
+        user?.email?.toLowerCase().trim(),
+        ...accounts.map((a) => a.email_address?.toLowerCase().trim()),
+      ].filter(Boolean) as string[]
+    )
 
-    visibleEmails.forEach((email) => {
-      const norm = normalizeSubject(email.subject)
-      const key = norm || 'no_subject'
-      if (!map.has(key)) {
-        map.set(key, [])
+    // Sort emails ascending by date_sent so replies build on earlier parent messages
+    const sorted = [...visibleEmails].sort(
+      (a, b) => new Date(a.date_sent).getTime() - new Date(b.date_sent).getTime()
+    )
+
+    interface InternalThread {
+      threadKey: string
+      baseSubject: string
+      counterparties: Set<string>
+      messageIds: Set<string>
+      emails: EmailItem[]
+    }
+
+    const threadList: InternalThread[] = []
+
+    sorted.forEach((email) => {
+      const isReply = isReplyOrForward(email.subject) || Boolean(email.in_reply_to)
+      const baseSub = normalizeSubject(email.subject)
+      const counterparties = getEmailCounterparties(email, myEmails)
+
+      let matchedThread: InternalThread | null = null
+
+      // 1. Direct Message-ID linking (In-Reply-To / References)
+      if (email.in_reply_to) {
+        for (let i = threadList.length - 1; i >= 0; i--) {
+          if (threadList[i].messageIds.has(email.in_reply_to)) {
+            matchedThread = threadList[i]
+            break
+          }
+        }
       }
-      map.get(key)!.push(email)
+
+      // 2. Reply Chain Linking:
+      // Only thread together if:
+      // - It has an explicit reply/forward indicator (Re:, Fwd:)
+      // - AND the base subject matches
+      // - AND the counterparties (participants) overlap!
+      // Two distinct users with the same subject will NEVER be grouped!
+      if (!matchedThread && isReply && baseSub && baseSub !== '(no subject)') {
+        for (let i = threadList.length - 1; i >= 0; i--) {
+          const candidate = threadList[i]
+          if (
+            candidate.baseSubject === baseSub &&
+            setsOverlap(candidate.counterparties, counterparties)
+          ) {
+            matchedThread = candidate
+            break
+          }
+        }
+      }
+
+      if (matchedThread) {
+        matchedThread.emails.push(email)
+        if (email.message_id) matchedThread.messageIds.add(email.message_id)
+        for (const cp of counterparties) matchedThread.counterparties.add(cp)
+      } else {
+        const newThread: InternalThread = {
+          threadKey: `thread_${email.id}`,
+          baseSubject: baseSub,
+          counterparties,
+          messageIds: new Set(email.message_id ? [email.message_id] : []),
+          emails: [email],
+        }
+        threadList.push(newThread)
+      }
     })
 
-    const result: EmailThread[] = []
+    const result: EmailThread[] = threadList.map((t) => {
+      // Chronological order within thread
+      t.emails.sort((a, b) => new Date(a.date_sent).getTime() - new Date(b.date_sent).getTime())
+      const latestEmail = t.emails[t.emails.length - 1]
+      const displaySubject = cleanSubject(latestEmail.subject) || '(No Subject)'
 
-    map.forEach((items, key) => {
-      // Sort items by date_sent ascending (chronological conversation flow)
-      items.sort((a, b) => new Date(a.date_sent).getTime() - new Date(b.date_sent).getTime())
-
-      const latestEmail = items[items.length - 1]
-      const displaySubject = latestEmail.subject.replace(/^(re|fwd|fw):\s*/i, '').trim() || latestEmail.subject
-
-      result.push({
-        threadKey: key,
-        subject: displaySubject,
-        emails: items,
-        latestEmail,
-        unread: items.some((e) => e.unread),
-        starred: items.some((e) => e.starred),
-        count: items.length,
+      const names: string[] = []
+      t.emails.forEach((em) => {
+        const isMe = myEmails.has((em.sender_email || '').toLowerCase().trim())
+        const name = isMe ? 'Me' : (em.sender_name || em.sender_email)
+        if (name && !names.includes(name)) {
+          names.push(name)
+        }
       })
+      const sendersSummary = names.join(', ') || latestEmail.sender_name || latestEmail.sender_email
+
+      return {
+        threadKey: t.threadKey,
+        subject: displaySubject,
+        emails: t.emails,
+        latestEmail,
+        unread: t.emails.some((e) => e.unread),
+        starred: t.emails.some((e) => e.starred),
+        count: t.emails.length,
+        sendersSummary,
+      }
     })
 
-    // Sort threads by latest email date descending (newest thread on top)
+    // Sort threads descending by newest email
     result.sort((a, b) => new Date(b.latestEmail.date_sent).getTime() - new Date(a.latestEmail.date_sent).getTime())
 
     return result
-  }, [visibleEmails])
+  }, [visibleEmails, accounts, user, selectedAccountId])
 
   const selectedThread = useMemo(
     () => threads.find((t) => t.threadKey === selectedThreadKey) ?? null,
     [threads, selectedThreadKey]
   )
+
+  const selectedEmail = useMemo(
+    () => emails.find((e) => e.id === selectedEmailId) ?? null,
+    [emails, selectedEmailId]
+  )
+
+  const activeReaderThread = useMemo(() => {
+    if (viewMode === 'threads') {
+      return selectedThread
+    }
+    if (selectedEmail) {
+      return {
+        threadKey: `single_${selectedEmail.id}`,
+        subject: cleanSubject(selectedEmail.subject) || '(No Subject)',
+        emails: [selectedEmail],
+        latestEmail: selectedEmail,
+        unread: selectedEmail.unread,
+        starred: selectedEmail.starred,
+        count: 1,
+        sendersSummary: selectedEmail.sender_name || selectedEmail.sender_email,
+      } as EmailThread
+    }
+    return null
+  }, [viewMode, selectedThread, selectedEmail])
+
+  const selectedEmailParentThread = useMemo(() => {
+    if (!selectedEmail) return null
+    return threads.find((t) => t.emails.some((em) => em.id === selectedEmail.id)) ?? null
+  }, [selectedEmail, threads])
 
   const unreadCount = useMemo(
     () => emails.filter((email) => email.folder === 'Inbox' && email.unread).length,
@@ -808,8 +967,8 @@ export default function Page() {
     }
 
     setSelectedEmailId(email.id)
-    const norm = normalizeSubject(email.subject) || 'no_subject'
-    setSelectedThreadKey(norm)
+    const matchingThread = threads.find((t) => t.emails.some((em) => em.id === email.id))
+    setSelectedThreadKey(matchingThread ? matchingThread.threadKey : `thread_${email.id}`)
 
     if (email.unread) {
       mailEventBus.emit('EMAIL_READ_TOGGLED', { emailId: email.id, unread: false })
@@ -827,9 +986,22 @@ export default function Page() {
   }
 
   const selectThread = async (thread: EmailThread) => {
+    setSelectedThreadKey(thread.threadKey)
     const latest = thread.latestEmail
     if (latest) {
-      selectEmail(latest)
+      setSelectedEmailId(latest.id)
+      if (latest.unread) {
+        mailEventBus.emit('EMAIL_READ_TOGGLED', { emailId: latest.id, unread: false })
+        setEmails((current) => current.map((e) => (e.id === latest.id ? { ...e, unread: false } : e)))
+      }
+      if (!latest.body_html) {
+        try {
+          const res = await api.getEmail(latest.id)
+          if (res?.email) {
+            setEmails((current) => current.map((e) => (e.id === latest.id ? { ...e, ...res.email } : e)))
+          }
+        } catch (e) {}
+      }
     }
   }
 
@@ -844,6 +1016,8 @@ export default function Page() {
   selectedThreadRef.current = selectedThread
   const selectedThreadKeyRef = useRef(selectedThreadKey)
   selectedThreadKeyRef.current = selectedThreadKey
+  const viewModeRef = useRef(viewMode)
+  viewModeRef.current = viewMode
 
   // Power-User Keyboard Shortcuts Listener (Desktop, Laptop & PWA)
   useEffect(() => {
@@ -921,33 +1095,53 @@ export default function Page() {
         return
       }
 
-      // 6. Navigation: j or Down Arrow (Next email)
+      // 6. Navigation: j or Down Arrow (Next item)
       if (key === 'j' || e.key === 'ArrowDown') {
         e.preventDefault()
-        const currentList = visibleEmailsRef.current
-        if (currentList.length === 0) return
-        if (selectedEmailIdRef.current === null) {
-          selectEmail(currentList[0])
+        if (viewModeRef.current === 'threads') {
+          const currentThreads = threadsRef.current
+          if (currentThreads.length === 0) return
+          const currentIndex = currentThreads.findIndex((t) => t.threadKey === selectedThreadKeyRef.current)
+          if (currentIndex >= 0 && currentIndex < currentThreads.length - 1) {
+            selectThread(currentThreads[currentIndex + 1])
+          } else if (currentIndex === -1 && currentThreads.length > 0) {
+            selectThread(currentThreads[0])
+          }
         } else {
-          const currentIndex = currentList.findIndex((em) => em.id === selectedEmailIdRef.current)
-          if (currentIndex >= 0 && currentIndex < currentList.length - 1) {
-            selectEmail(currentList[currentIndex + 1])
+          const currentList = visibleEmailsRef.current
+          if (currentList.length === 0) return
+          if (selectedEmailIdRef.current === null) {
+            selectEmail(currentList[0])
+          } else {
+            const currentIndex = currentList.findIndex((em) => em.id === selectedEmailIdRef.current)
+            if (currentIndex >= 0 && currentIndex < currentList.length - 1) {
+              selectEmail(currentList[currentIndex + 1])
+            }
           }
         }
         return
       }
 
-      // 7. Navigation: k or Up Arrow (Previous email)
+      // 7. Navigation: k or Up Arrow (Previous item)
       if (key === 'k' || e.key === 'ArrowUp') {
         e.preventDefault()
-        const currentList = visibleEmailsRef.current
-        if (currentList.length === 0) return
-        if (selectedEmailIdRef.current === null) {
-          selectEmail(currentList[0])
-        } else {
-          const currentIndex = currentList.findIndex((em) => em.id === selectedEmailIdRef.current)
+        if (viewModeRef.current === 'threads') {
+          const currentThreads = threadsRef.current
+          if (currentThreads.length === 0) return
+          const currentIndex = currentThreads.findIndex((t) => t.threadKey === selectedThreadKeyRef.current)
           if (currentIndex > 0) {
-            selectEmail(currentList[currentIndex - 1])
+            selectThread(currentThreads[currentIndex - 1])
+          }
+        } else {
+          const currentList = visibleEmailsRef.current
+          if (currentList.length === 0) return
+          if (selectedEmailIdRef.current === null) {
+            selectEmail(currentList[0])
+          } else {
+            const currentIndex = currentList.findIndex((em) => em.id === selectedEmailIdRef.current)
+            if (currentIndex > 0) {
+              selectEmail(currentList[currentIndex - 1])
+            }
           }
         }
         return
@@ -955,11 +1149,20 @@ export default function Page() {
 
       // 8. Open: Enter or 'o'
       if (e.key === 'Enter' || key === 'o') {
-        const currentList = visibleEmailsRef.current
-        if (selectedEmailIdRef.current === null && currentList.length > 0) {
-          e.preventDefault()
-          selectEmail(currentList[0])
-          return
+        if (viewModeRef.current === 'threads') {
+          const currentThreads = threadsRef.current
+          if (selectedThreadKeyRef.current === null && currentThreads.length > 0) {
+            e.preventDefault()
+            selectThread(currentThreads[0])
+            return
+          }
+        } else {
+          const currentList = visibleEmailsRef.current
+          if (selectedEmailIdRef.current === null && currentList.length > 0) {
+            e.preventDefault()
+            selectEmail(currentList[0])
+            return
+          }
         }
       }
 
@@ -1222,7 +1425,9 @@ export default function Page() {
         subject: composeSubject,
         body: composeBody,
         attachments: composeAttachments,
+        in_reply_to: composeInReplyTo,
       })
+      setComposeInReplyTo(undefined)
       showSuccess('Email Sent', res.message || 'Your email has been sent successfully!')
       setComposeOpen(false)
       setComposeTo('')
@@ -1714,12 +1919,50 @@ export default function Page() {
           </div>
         )}
 
-        <div className="flex items-center justify-between px-4 py-4">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border/50">
           <div>
             <h1 className="text-lg font-semibold">{folder}</h1>
             <p className="text-xs text-muted-foreground">
               {folder === 'Inbox' ? `${unreadCount} unread` : 'All emails'}
             </p>
+          </div>
+
+          {/* View Mode Toggle: Conversation View vs Standard Mailbox */}
+          <div className="flex items-center rounded-lg bg-muted/80 p-0.5 text-xs shadow-inner border border-border/60">
+            <button
+              type="button"
+              onClick={() => {
+                setViewMode('threads')
+                if (typeof window !== 'undefined') localStorage.setItem('mosaic_view_mode', 'threads')
+              }}
+              className={cn(
+                'flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition cursor-pointer',
+                viewMode === 'threads'
+                  ? 'bg-background text-foreground shadow-sm font-semibold'
+                  : 'text-muted-foreground hover:text-foreground'
+              )}
+              title="Conversation View: Group genuine replies between same participants into conversation threads"
+            >
+              <MessageSquare className="size-3 text-primary" />
+              <span>Threads</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setViewMode('messages')
+                if (typeof window !== 'undefined') localStorage.setItem('mosaic_view_mode', 'messages')
+              }}
+              className={cn(
+                'flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition cursor-pointer',
+                viewMode === 'messages'
+                  ? 'bg-background text-foreground shadow-sm font-semibold'
+                  : 'text-muted-foreground hover:text-foreground'
+              )}
+              title="Standard Mailbox: View each email individually without conversation stacking"
+            >
+              <Mail className="size-3 text-primary" />
+              <span>Messages</span>
+            </button>
           </div>
         </div>
 
@@ -1743,9 +1986,150 @@ export default function Page() {
             <div className="p-8 text-center text-xs text-muted-foreground">
               No emails in {folder} folder.
             </div>
+          ) : viewMode === 'threads' ? (
+            threads.length === 0 ? (
+              <div className="p-8 text-center text-xs text-muted-foreground">
+                No conversation threads in {folder} folder.
+              </div>
+            ) : (
+              threads.map((thread) => {
+                const isSelected = selectedThreadKey === thread.threadKey
+                const isChecked = thread.emails.every((em) => selectedIds.has(em.id))
+
+                return (
+                  <div
+                    key={thread.threadKey}
+                    onClick={() => selectThread(thread)}
+                    className={cn(
+                      'group relative flex w-full cursor-pointer gap-2.5 rounded-xl p-3 text-left transition hover:bg-muted/70',
+                      isSelected && 'bg-primary/10',
+                      isChecked && 'bg-primary/5 ring-1 ring-primary/20'
+                    )}
+                  >
+                    {/* Selection Checkbox */}
+                    <div
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setSelectedIds((prev) => {
+                          const next = new Set(prev)
+                          const allChecked = thread.emails.every((em) => next.has(em.id))
+                          if (allChecked) {
+                            thread.emails.forEach((em) => next.delete(em.id))
+                          } else {
+                            thread.emails.forEach((em) => next.add(em.id))
+                          }
+                          return next
+                        })
+                      }}
+                      className={cn(
+                        'mt-2 flex size-4.5 shrink-0 items-center justify-center rounded border transition cursor-pointer',
+                        isChecked
+                          ? 'border-primary bg-primary text-primary-foreground'
+                          : 'border-border/80 bg-background/80 hover:border-primary/80 opacity-0 group-hover:opacity-100',
+                        selectedIds.size > 0 && 'opacity-100'
+                      )}
+                    >
+                      {isChecked && <Check className="size-3 stroke-[3]" />}
+                    </div>
+
+                    <div
+                      className={cn(
+                        'mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-full text-xs font-semibold text-white',
+                        thread.latestEmail.color || 'bg-sky-600'
+                      )}
+                    >
+                      {thread.latestEmail.initials || 'EM'}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className={cn('truncate text-sm', thread.unread && 'font-semibold')}>
+                          {thread.sendersSummary}
+                        </span>
+                        {thread.count > 1 && (
+                          <span className="rounded-md bg-muted px-1.5 py-0.2 text-[10px] font-bold text-muted-foreground shrink-0">
+                            {thread.count}
+                          </span>
+                        )}
+                        {thread.unread && <span className="size-1.5 shrink-0 rounded-full bg-primary" />}
+                        {thread.starred && (
+                          <Star className="size-3.5 shrink-0 fill-amber-400 text-amber-400 group-hover:hidden" />
+                        )}
+                        <span className="ml-auto shrink-0 text-[11px] text-muted-foreground group-hover:hidden">
+                          {thread.latestEmail.time}
+                        </span>
+                        <div className="ml-auto hidden shrink-0 items-center gap-0.5 rounded-lg bg-background/90 px-1 py-0.5 shadow-sm backdrop-blur-sm border border-border/40 group-hover:flex">
+                          {folder !== 'Inbox' && (
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                thread.emails.forEach((e) => handleMoveToInbox(e.id))
+                              }}
+                              title={folder === 'Spam' ? 'Not Spam / Move to Inbox' : 'Move to Inbox'}
+                              className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-primary transition"
+                            >
+                              <Inbox className="size-3.5" />
+                            </button>
+                          )}
+                          {folder !== 'Archive' && folder !== 'Trash' && (
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                thread.emails.forEach((e) => handleArchiveEmail(e.id))
+                              }}
+                              title="Archive Thread"
+                              className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition"
+                            >
+                              <Archive className="size-3.5" />
+                            </button>
+                          )}
+                          {folder !== 'Spam' && folder !== 'Trash' && (
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                thread.emails.forEach((e) => handleSpamEmail(e.id))
+                              }}
+                              title="Report Spam"
+                              className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-rose-500 transition"
+                            >
+                              <ShieldAlert className="size-3.5" />
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              toggleStar(thread.latestEmail.id)
+                            }}
+                            title="Star Thread"
+                            className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-amber-500 transition"
+                          >
+                            <Star className={cn('size-3.5', thread.starred && 'fill-amber-400 text-amber-400')} />
+                          </button>
+                        </div>
+                      </div>
+                      <p className={cn('truncate text-sm', thread.unread ? 'font-semibold text-foreground' : 'text-muted-foreground')}>
+                        {thread.subject}
+                      </p>
+                      <p className="truncate text-xs text-muted-foreground">{thread.latestEmail.preview}</p>
+                      <div className="mt-2 flex items-center gap-1.5">
+                        {(thread.latestEmail.tags || []).map((tag) => (
+                          <span key={tag} className="rounded-md bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                            {tag}
+                          </span>
+                        ))}
+                        {thread.latestEmail.attachment && <Paperclip className="ml-1 size-3 text-muted-foreground" />}
+                      </div>
+                    </div>
+                  </div>
+                )
+              })
+            )
           ) : (
             visibleEmails.map((email) => {
-              const isSelected = selectedEmailId === email.id || (selectedThreadKey && normalizeSubject(email.subject) === selectedThreadKey && selectedEmailId === null)
+              const isSelected = selectedEmailId === email.id
               const isChecked = selectedIds.has(email.id)
 
               return (
@@ -1898,28 +2282,55 @@ export default function Page() {
       {/* Threaded Email Conversation Reader View */}
       <section className={cn(
         'min-w-0 flex-1 flex-col',
-        selectedThreadKey ? 'flex' : 'hidden lg:flex'
+        activeReaderThread ? 'flex' : 'hidden lg:flex'
       )}>
-        {syncing && !selectedThread && threads.length === 0 ? (
+        {syncing && !activeReaderThread && threads.length === 0 ? (
           <EmailReaderSkeleton />
-        ) : selectedThread ? (
+        ) : activeReaderThread ? (
           <>
             <header className="flex items-center gap-1 border-b border-border/70 px-5 py-3">
               <IconButton label="Back" onClick={() => { setSelectedThreadKey(null); setSelectedEmailId(null); }}>
                 <ChevronLeft />
               </IconButton>
               <div className="flex items-center gap-2 min-w-0 ml-2">
-                <MessageSquare className="size-4 text-primary shrink-0" />
-                <span className="text-xs font-semibold text-muted-foreground">
-                  {selectedThread.count} {selectedThread.count === 1 ? 'message' : 'messages'} in conversation
-                </span>
+                {viewMode === 'threads' ? (
+                  <>
+                    <MessageSquare className="size-4 text-primary shrink-0" />
+                    <span className="text-xs font-semibold text-muted-foreground">
+                      {activeReaderThread.count} {activeReaderThread.count === 1 ? 'message' : 'messages'} in conversation
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <Mail className="size-4 text-primary shrink-0" />
+                    <span className="text-xs font-semibold text-muted-foreground">
+                      Single Message View
+                    </span>
+                    {selectedEmailParentThread && selectedEmailParentThread.count > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setViewMode('threads')
+                          setSelectedThreadKey(selectedEmailParentThread.threadKey)
+                          if (typeof window !== 'undefined') localStorage.setItem('mosaic_view_mode', 'threads')
+                        }}
+                        className="ml-2 flex items-center gap-1.5 rounded-full bg-primary/10 px-2.5 py-0.5 text-[11px] font-semibold text-primary hover:bg-primary/20 transition cursor-pointer"
+                        title="View the other replies in this conversation thread"
+                      >
+                        <MessageSquare className="size-3" />
+                        <span>View Full Thread ({selectedEmailParentThread.count} messages)</span>
+                      </button>
+                    )}
+                  </>
+                )}
               </div>
               <div className="ml-auto flex items-center gap-1">
                 <IconButton
                   label="Reply"
                   onClick={() => {
-                    setComposeTo(getReplyRecipientForThread(selectedThread))
-                    setComposeSubject(getReplySubject(selectedThread.subject))
+                    setComposeTo(getReplyRecipientForThread(activeReaderThread))
+                    setComposeSubject(getReplySubject(activeReaderThread.subject))
+                    setComposeInReplyTo(activeReaderThread.latestEmail?.message_id)
                     setComposeOpen(true)
                   }}
                 >
@@ -1929,8 +2340,9 @@ export default function Page() {
                   <IconButton
                     label={folder === 'Spam' ? 'Not Spam (Move to Inbox)' : 'Move to Inbox'}
                     onClick={() => {
-                      selectedThread.emails.forEach((e) => handleMoveToInbox(e.id))
+                      activeReaderThread.emails.forEach((e) => handleMoveToInbox(e.id))
                       setSelectedThreadKey(null)
+                      setSelectedEmailId(null)
                     }}
                   >
                     <Inbox />
@@ -1938,10 +2350,11 @@ export default function Page() {
                 )}
                 {folder !== 'Archive' && folder !== 'Trash' && (
                   <IconButton
-                    label="Archive Thread"
+                    label={viewMode === 'threads' ? 'Archive Thread' : 'Archive Email'}
                     onClick={() => {
-                      selectedThread.emails.forEach((e) => handleArchiveEmail(e.id))
+                      activeReaderThread.emails.forEach((e) => handleArchiveEmail(e.id))
                       setSelectedThreadKey(null)
+                      setSelectedEmailId(null)
                     }}
                   >
                     <Archive />
@@ -1951,8 +2364,9 @@ export default function Page() {
                   <IconButton
                     label="Report Spam"
                     onClick={() => {
-                      selectedThread.emails.forEach((e) => handleSpamEmail(e.id))
+                      activeReaderThread.emails.forEach((e) => handleSpamEmail(e.id))
                       setSelectedThreadKey(null)
+                      setSelectedEmailId(null)
                     }}
                   >
                     <ShieldAlert />
@@ -1961,17 +2375,18 @@ export default function Page() {
                 <IconButton
                   label="Mark as unread"
                   onClick={() => {
-                    selectedThread.emails.forEach((e) => handleToggleUnread(e.id, true))
+                    activeReaderThread.emails.forEach((e) => handleToggleUnread(e.id, true))
                   }}
                 >
                   <Mail />
                 </IconButton>
                 {folder !== 'Trash' && (
                   <IconButton
-                    label="Delete Thread"
+                    label={viewMode === 'threads' ? 'Delete Thread' : 'Delete Email'}
                     onClick={() => {
-                      selectedThread.emails.forEach((e) => handleDeleteEmail(e.id))
+                      activeReaderThread.emails.forEach((e) => handleDeleteEmail(e.id))
                       setSelectedThreadKey(null)
+                      setSelectedEmailId(null)
                     }}
                   >
                     <Trash2 />
@@ -1983,11 +2398,11 @@ export default function Page() {
               <div className="mx-auto max-w-3xl px-8 py-8 space-y-6">
                 {/* Subject Header */}
                 <div className="border-b border-border/70 pb-4">
-                  <h2 className="text-2xl font-semibold tracking-tight">{selectedThread.subject}</h2>
+                  <h2 className="text-2xl font-semibold tracking-tight">{activeReaderThread.subject}</h2>
                 </div>
 
                 {/* Conversation Messages Stack (Chronological Order) */}
-                {selectedThread.emails.map((msg, index) => (
+                {activeReaderThread.emails.map((msg, index) => (
                   <div
                     key={msg.id}
                     className="rounded-2xl border border-border/80 bg-card p-6 shadow-sm transition hover:border-border"
@@ -2027,21 +2442,22 @@ export default function Page() {
                             <button
                               type="button"
                               onClick={() => handleToggleUnread(msg.id, !msg.unread)}
-                              className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted"
+                              className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted cursor-pointer"
                               title={msg.unread ? "Mark as read" : "Mark as unread"}
                             >
                               <Mail className={cn('size-4', msg.unread && 'text-primary fill-primary/20')} />
                             </button>
-                            <button onClick={() => toggleStar(msg.id)} className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted">
+                            <button onClick={() => toggleStar(msg.id)} className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted cursor-pointer">
                               <Star className={cn('size-4', msg.starred && 'fill-amber-400 text-amber-400')} />
                             </button>
                             <button
                               onClick={() => {
                                 setComposeTo(getReplyRecipientForMessage(msg))
-                                setComposeSubject(getReplySubject(selectedThread.subject))
+                                setComposeSubject(getReplySubject(activeReaderThread.subject))
+                                setComposeInReplyTo(msg.message_id)
                                 setComposeOpen(true)
                               }}
-                              className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted"
+                              className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted cursor-pointer"
                               title="Reply to message"
                             >
                               <Reply className="size-4" />
@@ -2080,20 +2496,21 @@ export default function Page() {
                   <RichTextEditor
                     value={reply}
                     onChange={setReply}
-                    placeholder={`Reply in conversation thread: "${selectedThread.subject}"... (Shortcut: R)`}
+                    placeholder={viewMode === 'threads' ? `Reply in conversation thread: "${activeReaderThread.subject}"... (Shortcut: R)` : `Reply to "${activeReaderThread.subject}"... (Shortcut: R)`}
                     minHeight="140px"
                     maxHeight="320px"
                   />
                   <div className="mt-3 flex justify-end">
                     <button
                       onClick={() => {
-                        setComposeTo(getReplyRecipientForThread(selectedThread))
-                        setComposeSubject(getReplySubject(selectedThread.subject))
+                        setComposeTo(getReplyRecipientForThread(activeReaderThread))
+                        setComposeSubject(getReplySubject(activeReaderThread.subject))
                         setComposeBody(reply)
+                        setComposeInReplyTo(activeReaderThread.latestEmail?.message_id)
                         setComposeOpen(true)
                         setReply('')
                       }}
-                      className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90 transition"
+                      className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90 transition cursor-pointer"
                     >
                       <Send className="size-4" /> Send Reply
                     </button>
@@ -2103,12 +2520,16 @@ export default function Page() {
             </div>
           </>
         ) : (
-          <div className="flex flex-1 flex-col items-center justify-center text-center">
+          <div className="flex flex-1 flex-col items-center justify-center text-center p-8">
             <div className="mb-4 flex size-14 items-center justify-center rounded-2xl bg-muted">
-              <Mail className="size-6 text-muted-foreground" />
+              {viewMode === 'threads' ? <MessageSquare className="size-6 text-muted-foreground" /> : <Mail className="size-6 text-muted-foreground" />}
             </div>
-            <h2 className="font-semibold">Select a conversation thread</h2>
-            <p className="mt-1 text-sm text-muted-foreground">Choose a message thread from your inbox to view full conversation history.</p>
+            <h2 className="font-semibold">{viewMode === 'threads' ? 'Select a conversation thread' : 'Select an email'}</h2>
+            <p className="mt-1 text-sm text-muted-foreground max-w-sm">
+              {viewMode === 'threads'
+                ? 'Choose a message thread from your inbox to view full conversation history.'
+                : 'Choose an email from your list to view its contents.'}
+            </p>
           </div>
         )}
       </section>
